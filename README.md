@@ -15,4 +15,4 @@ To build on Linux:
 3. `make` to build.
 4. Copy `super_mario_kart_ast.json` into the `build` directory and execute `./smk`.
 
-At the moment it doesn't do anthing useful it just sets up the start of allocating some registers and adding basic blocks for all the program labels.
+Executing `smk` will output a file containing LLVM bitcode `smk.bc` that can then be compiled to generate the final recompiled executable with e.g. `llc -filetype=obj smk.bc` `gcc smk.bc.o` but at the moment it doesn't do anthing useful it just sets up the start of allocating some registers and adding basic blocks for all the program labels.
