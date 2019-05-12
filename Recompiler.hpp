@@ -8,11 +8,6 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 
-namespace llvm
-{
-	class BasicBlock;
-}
-
 class Recompiler
 {
 public:

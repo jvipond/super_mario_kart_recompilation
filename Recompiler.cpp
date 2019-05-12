@@ -163,33 +163,38 @@ void Recompiler::AddLabelNameToBasicBlock( const std::string& labelName, llvm::B
 
 void Recompiler::LoadAST( const char* filename )
 {
-	std::ifstream ifs( "super_mario_kart_ast.json" );
-	nlohmann::json j = nlohmann::json::parse( ifs );
-
-	std::vector<nlohmann::json> ast;
-	j[ "ast" ].get_to( ast );
-
-	for ( auto&& node : ast )
+	std::ifstream ifs( filename );
+	if ( ifs.is_open() )
 	{
-		if ( node.contains( "Label" ) )
+		nlohmann::json j = nlohmann::json::parse( ifs );
+
+		std::vector<nlohmann::json> ast;
+		j[ "ast" ].get_to( ast );
+
+		for ( auto&& node : ast )
 		{
-			m_Program.emplace_back( Label { node[ "Label" ][ "name" ], node[ "Label" ][ "offset" ] } );
-			m_LabelNamesToOffsets.emplace( node[ "Label" ][ "name" ], node[ "Label" ][ "offset" ] );
-		}
-		else if ( node.contains( "Instruction" ) )
-		{
-			if ( node[ "Instruction" ].contains( "operand" ) )
+			if ( node.contains( "Label" ) )
 			{
-				m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ], node[ "Instruction" ][ "operand" ] } );
+				m_Program.emplace_back( Label{ node[ "Label" ][ "name" ], node[ "Label" ][ "offset" ] } );
+				m_LabelNamesToOffsets.emplace( node[ "Label" ][ "name" ], node[ "Label" ][ "offset" ] );
 			}
-			else
+			else if ( node.contains( "Instruction" ) )
 			{
-				m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ] } );
+				if ( node[ "Instruction" ].contains( "operand" ) )
+				{
+					m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ], node[ "Instruction" ][ "operand" ] } );
+				}
+				else
+				{
+					m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ] } );
+				}
 			}
 		}
 	}
-
-
+	else
+	{
+		std::cerr << "Can't load ast file " << filename << std::endl;
+	}
 }
 
 Recompiler::Label::Label( const std::string& name, const uint32_t offset )
