@@ -30,6 +30,7 @@ Recompiler::Recompiler()
 , m_registerStatusOverflow( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusOverflow" )
 , m_registerStatusIndexWidth( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusIndexWidth" )
 , m_registerStatusZero( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusZero" )
+, m_CurrentBasicBlock( nullptr )
 {
 
 }
@@ -112,11 +113,50 @@ void Recompiler::GenerateCode()
 		
 		void operator()( const Label& label )
 		{
+			auto labelNamesToBasicBlocks = m_Recompiler.GetLabelNamesToBasicBlocks();
+			auto search = labelNamesToBasicBlocks.find( label.GetName() );
+			assert( search != labelNamesToBasicBlocks.end() );
+			
+			if ( m_Recompiler.GetCurrentBasicBlock() != nullptr )
+			{
+				m_Recompiler.CreateBranch( search->second );
+			}
+
+			m_Recompiler.SetCurrentBasicBlock( search->second );
+			m_Recompiler.SetInsertPoint( search->second );
 		}
 
-		void operator()( const Instruction& )
+		void operator()( const Instruction& instruction )
 		{
-
+			switch ( instruction.GetOpcode() )
+			{
+			case 0x00:
+				break;
+			case 0x01:
+				break;
+			case 0x02:
+				break;
+			case 0x03:
+				break;
+			case 0x04:
+				break;
+			case 0x05:
+				break;
+			case 0x06:
+				break;
+			case 0x07:
+				break;
+			case 0x08:
+				break;
+			case 0x09: // ora immediate
+				break;
+			case 0x0D: // ora absolute
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformOra( operandValue );
+				}
+				break;
+			}
 		}
 
 		Recompiler& m_Recompiler;
@@ -148,9 +188,10 @@ void Recompiler::Recompile()
 	llvm::Value* returnValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0, true ) );
 	m_IRBuilder.CreateRet( returnValue );
 
-	m_RecompilationModule.print( llvm::errs(), nullptr );
-
 	std::error_code EC;
+	llvm::raw_fd_ostream outputHumanReadable( "smk.human_readable.bc", EC );
+	m_RecompilationModule.print( outputHumanReadable, nullptr );
+
 	llvm::raw_fd_ostream outputStream( "smk.bc", EC );
 	llvm::WriteBitcodeToFile( m_RecompilationModule, outputStream );
 	outputStream.flush();
@@ -159,6 +200,37 @@ void Recompiler::Recompile()
 void Recompiler::AddLabelNameToBasicBlock( const std::string& labelName, llvm::BasicBlock* basicBlock )
 {
 	m_LabelNamesToBasicBlocks.emplace( labelName, basicBlock );
+}
+
+void Recompiler::CreateBranch( llvm::BasicBlock* basicBlock )
+{
+	m_IRBuilder.CreateBr( basicBlock );
+}
+
+void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
+{
+	m_IRBuilder.SetInsertPoint( basicBlock );
+}
+
+void Recompiler::PerformOra( llvm::Value* value )
+{
+	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
+	llvm::Value* newA = m_IRBuilder.CreateOr( loadA, value, "" );
+	m_IRBuilder.CreateStore( newA, &m_registerA );
+	TestAndSetZero( newA );
+	TestAndSetNegative( newA );
+}
+
+void Recompiler::TestAndSetZero( llvm::Value* value )
+{
+	llvm::Value* zeroConst = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0, false ) );
+	llvm::Value* isZero = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, value, zeroConst, "" );
+	m_IRBuilder.CreateStore( isZero, &m_registerStatusZero );
+}
+
+void Recompiler::TestAndSetNegative( llvm::Value* value )
+{
+	// TODO implement me.
 }
 
 void Recompiler::LoadAST( const char* filename )
@@ -212,6 +284,7 @@ Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcod
 	: m_Offset( offset )
 	, m_Opcode( opcode )
 	, m_Operand( operand )
+	, m_HasOperand( true )
 {
 }
 
@@ -219,6 +292,7 @@ Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcod
 	: m_Offset( offset )
 	, m_Opcode( opcode )
 	, m_Operand( 0 )
+	, m_HasOperand( false )
 {
 }
 

@@ -22,6 +22,16 @@ public:
 	void AddDynamicJumpTableBlock();
 	void GenerateCode();
 
+	const std::map< std::string, llvm::BasicBlock* >& GetLabelNamesToBasicBlocks( void ) const { return m_LabelNamesToBasicBlocks; }
+	const llvm::BasicBlock* GetCurrentBasicBlock( void ) const { return m_CurrentBasicBlock; }
+	void SetCurrentBasicBlock( llvm::BasicBlock* basicBlock ) { m_CurrentBasicBlock = basicBlock; }
+
+	void CreateBranch( llvm::BasicBlock* basicBlock );
+	void SetInsertPoint( llvm::BasicBlock* basicBlock );
+	void PerformOra( llvm::Value* value );
+	void TestAndSetZero( llvm::Value* value );
+	void TestAndSetNegative( llvm::Value* value );
+
 private:
 	class Label
 	{
@@ -43,10 +53,15 @@ private:
 		Instruction( const uint32_t offset, const uint8_t opcode );
 		~Instruction();
 
+		uint8_t GetOpcode( void ) const { return m_Opcode; }
+		uint32_t GetOperand( void ) const { return m_Operand; }
+		bool HasOperand( void ) const { return m_HasOperand; }
+
 	private:
 		uint32_t m_Offset;
 		uint8_t m_Opcode;
 		uint32_t m_Operand;
+		bool m_HasOperand;
 	};
 
 
@@ -79,6 +94,8 @@ private:
 	llvm::GlobalVariable m_registerStatusOverflow;
 	llvm::GlobalVariable m_registerStatusIndexWidth;
 	llvm::GlobalVariable m_registerStatusZero;
+
+	llvm::BasicBlock* m_CurrentBasicBlock;
 };
 
 #endif // RECOMPILER_HPP
