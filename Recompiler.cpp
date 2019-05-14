@@ -79,9 +79,10 @@ void Recompiler::InitialiseBasicBlocksFromLabelNames()
 		llvm::LLVMContext& m_Context;
 	};
 
+	InitialiseBasicBlocksFromLabelsVisitor initialiseBasicBlocksFromLabelsVisitor( *this, m_MainFunction, m_LLVMContext );
 	for ( auto&& n : m_Program )
 	{
-		std::visit( InitialiseBasicBlocksFromLabelsVisitor( *this, m_MainFunction, m_LLVMContext ), n );
+		std::visit( initialiseBasicBlocksFromLabelsVisitor, n );
 	}
 }
 
@@ -148,14 +149,88 @@ void Recompiler::GenerateCode()
 				break;
 			case 0x08:
 				break;
-			case 0x09: // ora immediate
+			case 0x09: // ORA immediate
 				break;
-			case 0x0D: // ora absolute
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformOra( operandValue );
-				}
-				break;
+			case 0x0D: // ORA absolute
+			{
+				llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+				m_Recompiler.PerformOra( operandValue );
+			}
+			break;
+			case 0xAD: // LDA absolute
+			{
+				llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+				m_Recompiler.PerformLda( operandValue );
+			}
+			break;
+			case 0xAE: // LDX absolute
+			{
+				llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+				m_Recompiler.PerformLdx( operandValue );
+			}
+			break;
+			case 0xAC: // LDY absolute
+			{
+				llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+				m_Recompiler.PerformLdy( operandValue );
+			}
+			break;
+			case 0xCD: // CMP absolute
+			{
+				llvm::Value* lValue = m_Recompiler.CreateLoadA();
+				llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+				m_Recompiler.PerformCmp( lValue, rValue );
+			}
+			break;
+			case 0xEC: // CPX absolute
+			{
+				llvm::Value* lValue = m_Recompiler.CreateLoadX();
+				llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+				m_Recompiler.PerformCmp( lValue, rValue );
+			}
+			break;
+			case 0xCC: // CPY absolute
+			{
+				llvm::Value* lValue = m_Recompiler.CreateLoadY();
+				llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+				m_Recompiler.PerformCmp( lValue, rValue );
+			}
+			break;
+			case 0x18: // CLC implied
+			{
+				m_Recompiler.ClearCarry();
+			}
+			break;
+			case 0x38: // SEC implied
+			{
+				m_Recompiler.SetCarry();
+			}
+			break;
+			case 0xD8: // CLD implied
+			{
+				m_Recompiler.ClearDecimal();
+			}
+			break;
+			case 0x58: // CLI implied
+			{
+				m_Recompiler.ClearInterrupt();
+			}
+			break;
+			case 0xB8: // CLV implied
+			{
+				m_Recompiler.ClearOverflow();
+			}
+			break;
+			case 0xF8: // SED implied
+			{
+				m_Recompiler.SetDecimal();
+			}
+			break;
+			case 0x78: // SEI implied
+			{
+				m_Recompiler.SetInterrupt();
+			}
+			break;
 			}
 		}
 
@@ -164,9 +239,10 @@ void Recompiler::GenerateCode()
 		llvm::LLVMContext& m_Context;
 	};
 
+	CodeGenerationVisitor codeGenerationVisitor( *this, m_MainFunction, m_LLVMContext );
 	for ( auto&& n : m_Program )
 	{
-		std::visit( CodeGenerationVisitor( *this, m_MainFunction, m_LLVMContext ), n );
+		std::visit( codeGenerationVisitor, n );
 	}
 }
 
@@ -210,6 +286,98 @@ void Recompiler::CreateBranch( llvm::BasicBlock* basicBlock )
 void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
 {
 	m_IRBuilder.SetInsertPoint( basicBlock );
+}
+
+llvm::Value* Recompiler::CreateLoadA( void )
+{
+	return m_IRBuilder.CreateLoad( &m_registerA, "" );
+}
+
+llvm::Value* Recompiler::CreateLoadX( void )
+{
+	return m_IRBuilder.CreateLoad( &m_registerX, "" );
+}
+
+llvm::Value* Recompiler::CreateLoadY( void )
+{
+	return m_IRBuilder.CreateLoad( &m_registerY, "" );
+}
+
+void Recompiler::ClearCarry()
+{
+	llvm::Value* v = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 1, static_cast<uint64_t>( 0 ), false ) );
+	m_IRBuilder.CreateStore( v, &m_registerStatusCarry );
+}
+
+void Recompiler::SetCarry()
+{
+	llvm::Value* v = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 1, static_cast<uint64_t>( 1 ), false ) );
+	m_IRBuilder.CreateStore( v, &m_registerStatusCarry );
+}
+
+void Recompiler::ClearDecimal()
+{
+	llvm::Value* v = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 1, static_cast<uint64_t>( 0 ), false ) );
+	m_IRBuilder.CreateStore( v, &m_registerStatusDecimal );
+}
+
+void Recompiler::SetDecimal()
+{
+	llvm::Value* v = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 1, static_cast<uint64_t>( 1 ), false ) );
+	m_IRBuilder.CreateStore( v, &m_registerStatusDecimal );
+}
+
+void Recompiler::ClearInterrupt()
+{
+	llvm::Value* v = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 1, static_cast<uint64_t>( 0 ), false ) );
+	m_IRBuilder.CreateStore( v, &m_registerStatusInterrupt );
+}
+
+void Recompiler::SetInterrupt()
+{
+	llvm::Value* v = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 1, static_cast<uint64_t>( 1 ), false ) );
+	m_IRBuilder.CreateStore( v, &m_registerStatusInterrupt );
+}
+
+void Recompiler::ClearOverflow()
+{
+	llvm::Value* v = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 1, static_cast<uint64_t>( 0 ), false ) );
+	m_IRBuilder.CreateStore( v, &m_registerStatusOverflow );
+}
+
+void Recompiler::PerformCmp( llvm::Value* lValue, llvm::Value* rValue )
+{
+	llvm::Value* diff = m_IRBuilder.CreateSub( lValue, rValue, "" );
+	TestAndSetZero( diff );
+	TestAndSetNegative( diff );
+	TestAndSetCarrySubtraction( lValue, rValue );
+}
+
+void Recompiler::TestAndSetCarrySubtraction( llvm::Value* lValue, llvm::Value* rValue )
+{
+	llvm::Value* isCarry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_UGE, lValue, rValue, "" );
+	m_IRBuilder.CreateStore( isCarry, &m_registerStatusCarry );
+}
+
+void Recompiler::PerformLdy( llvm::Value* value )
+{
+	m_IRBuilder.CreateStore( value, &m_registerX );
+	TestAndSetZero( value );
+	TestAndSetNegative( value );
+}
+
+void Recompiler::PerformLdx( llvm::Value* value )
+{
+	m_IRBuilder.CreateStore( value, &m_registerX );
+	TestAndSetZero( value );
+	TestAndSetNegative( value );
+}
+
+void Recompiler::PerformLda( llvm::Value* value )
+{
+	m_IRBuilder.CreateStore( value, &m_registerA );
+	TestAndSetZero( value );
+	TestAndSetNegative( value );
 }
 
 void Recompiler::PerformOra( llvm::Value* value )

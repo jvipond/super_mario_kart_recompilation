@@ -29,8 +29,26 @@ public:
 	void CreateBranch( llvm::BasicBlock* basicBlock );
 	void SetInsertPoint( llvm::BasicBlock* basicBlock );
 	void PerformOra( llvm::Value* value );
+	void PerformLda( llvm::Value* value );
+	void PerformLdx( llvm::Value* value );
+	void PerformLdy( llvm::Value* value );
+	void PerformCmp( llvm::Value* lValue, llvm::Value* rValue );
 	void TestAndSetZero( llvm::Value* value );
 	void TestAndSetNegative( llvm::Value* value );
+	void TestAndSetCarrySubtraction( llvm::Value* lValue, llvm::Value* rValue );
+	void ClearCarry();
+	void SetCarry();
+	void ClearDecimal();
+	void SetDecimal();
+	void ClearInterrupt();
+	void SetInterrupt();
+	void ClearOverflow();
+
+
+
+	llvm::Value* CreateLoadA( void );
+	llvm::Value* CreateLoadX( void );
+	llvm::Value* CreateLoadY( void );
 
 private:
 	class Label
