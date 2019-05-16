@@ -283,6 +283,10 @@ void Recompiler::Recompile()
 	AddDynamicJumpTableBlock();
 	GenerateCode();
 
+	m_IRBuilder.SetInsertPoint( entry, entry->begin() );
+	CreateBranch( m_LabelNamesToBasicBlocks[ m_RomResetLabelName ] );
+
+	m_IRBuilder.SetInsertPoint( m_DynamicJumpTableBlock );
 	// Add return value of 0:
 	llvm::Value* returnValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0, true ) );
 	m_IRBuilder.CreateRet( returnValue );
@@ -314,9 +318,9 @@ void Recompiler::AddLabelNameToBasicBlock( const std::string& labelName, llvm::B
 
 llvm::BasicBlock* Recompiler::CreateBlock( const char* name )
 {
-	llvm::BasicBlock* doneBlock = llvm::BasicBlock::Create( m_LLVMContext, name );
-	doneBlock->moveAfter( m_CurrentBasicBlock );
-	return doneBlock;
+	llvm::BasicBlock* block = llvm::BasicBlock::Create( m_LLVMContext, name );
+	block->moveAfter( m_CurrentBasicBlock );
+	return block;
 }
 
 void Recompiler::CreateBranch( llvm::BasicBlock* basicBlock )
@@ -480,6 +484,7 @@ void Recompiler::LoadAST( const char* filename )
 		nlohmann::json j = nlohmann::json::parse( ifs );
 
 		std::vector<nlohmann::json> ast;
+		j[ "rom_reset_label_name" ].get_to( m_RomResetLabelName );
 		j[ "ast" ].get_to( ast );
 
 		for ( auto&& node : ast )
@@ -493,7 +498,7 @@ void Recompiler::LoadAST( const char* filename )
 			{
 				if ( node[ "Instruction" ].contains( "operand" ) )
 				{
-					m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ], node[ "Instruction" ][ "operand" ], node[ "Instruction" ][ "memory_mode" ], node[ "Instruction" ][ "index_mode" ] } );
+					m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ], node[ "Instruction" ][ "operand" ], node[ "Instruction" ][ "operand_size" ],  node[ "Instruction" ][ "memory_mode" ], node[ "Instruction" ][ "index_mode" ] } );
 				}
 				else
 				{
@@ -519,7 +524,7 @@ Recompiler::Label::~Label()
 
 }
 
-Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, MemoryMode memoryMode, MemoryMode indexMode )
+Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode )
 	: m_Offset( offset )
 	, m_Opcode( opcode )
 	, m_Operand( operand )

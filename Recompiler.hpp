@@ -80,12 +80,13 @@ private:
 	class Instruction
 	{
 	public:
-		Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, MemoryMode memoryMode, MemoryMode indexMode );
+		Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode );
 		Instruction( const uint32_t offset, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode );
 		~Instruction();
 
 		uint8_t GetOpcode( void ) const { return m_Opcode; }
 		uint32_t GetOperand( void ) const { return m_Operand; }
+		uint32_t GetOperandSize( void ) const { return m_OperandSize; }
 		bool HasOperand( void ) const { return m_HasOperand; }
 		const MemoryMode& GetMemoryMode() const { return m_MemoryMode; }
 		const MemoryMode& GetIndexMode() const { return m_IndexMode; }
@@ -94,6 +95,7 @@ private:
 		uint32_t m_Offset;
 		uint8_t m_Opcode;
 		uint32_t m_Operand;
+		uint32_t m_OperandSize;
 		MemoryMode m_MemoryMode;
 		MemoryMode m_IndexMode;
 		bool m_HasOperand;
@@ -104,6 +106,7 @@ private:
 	llvm::IRBuilder<> m_IRBuilder;
 	llvm::Module m_RecompilationModule;
 
+	std::string m_RomResetLabelName;
 	std::vector< std::variant<Label, Instruction> > m_Program;
 	std::map< std::string, uint32_t > m_LabelNamesToOffsets;
 	std::map< std::string, llvm::BasicBlock* > m_LabelNamesToBasicBlocks;
