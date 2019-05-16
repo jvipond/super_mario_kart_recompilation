@@ -39,9 +39,12 @@ public:
 	void PerformLdx8( llvm::Value* value );
 	void PerformLdy16( llvm::Value* value );
 	void PerformLdy8( llvm::Value* value );
-	void PerformCmp( llvm::Value* lValue, llvm::Value* rValue );
-	void TestAndSetZero( llvm::Value* value );
-	void TestAndSetNegative( llvm::Value* value );
+	void PerformCmp16( llvm::Value* lValue, llvm::Value* rValue );
+	void PerformCmp8( llvm::Value* lValue, llvm::Value* rValue );
+	void TestAndSetZero16( llvm::Value* value );
+	void TestAndSetZero8( llvm::Value* value );
+	void TestAndSetNegative16( llvm::Value* value );
+	void TestAndSetNegative8( llvm::Value* value );
 	void TestAndSetCarrySubtraction( llvm::Value* lValue, llvm::Value* rValue );
 	void ClearCarry();
 	void SetCarry();
@@ -50,12 +53,12 @@ public:
 	void ClearInterrupt();
 	void SetInterrupt();
 	void ClearOverflow();
-
-
-
-	llvm::Value* CreateLoadA( void );
-	llvm::Value* CreateLoadX( void );
-	llvm::Value* CreateLoadY( void );
+	llvm::Value* CreateLoadA16( void );
+	llvm::Value* CreateLoadA8( void );
+	llvm::Value* CreateLoadX16( void );
+	llvm::Value* CreateLoadX8( void );
+	llvm::Value* CreateLoadY16( void );
+	llvm::Value* CreateLoadY8( void );
 
 private:
 	class Label

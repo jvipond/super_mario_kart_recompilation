@@ -17,7 +17,7 @@ Recompiler::Recompiler()
 , m_registerA( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "A" )
 , m_registerDB( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "DB" )
 , m_registerDP( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "DP" )
-, m_registerPB( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "P" )
+, m_registerPB( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "PB" )
 , m_registerPC( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "PC" )
 , m_registerSP( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "SP" )
 , m_registerX( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "X" )
@@ -200,23 +200,50 @@ void Recompiler::GenerateCode()
 			break;
 			case 0xC9: // CMP immediate
 			{
-				llvm::Value* lValue = m_Recompiler.CreateLoadA();
-				llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-				m_Recompiler.PerformCmp( lValue, rValue );
+				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+				{
+					llvm::Value* lValue = m_Recompiler.CreateLoadA16();
+					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformCmp16( lValue, rValue );
+				}
+				else
+				{
+					llvm::Value* lValue = m_Recompiler.CreateLoadA8();
+					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformCmp8( lValue, rValue );
+				}
 			}
 			break;
 			case 0xE0: // CPX immediate
 			{
-				llvm::Value* lValue = m_Recompiler.CreateLoadX();
-				llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-				m_Recompiler.PerformCmp( lValue, rValue );
+				if ( instruction.GetIndexMode() == SIXTEEN_BIT )
+				{
+					llvm::Value* lValue = m_Recompiler.CreateLoadX16();
+					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformCmp16( lValue, rValue );
+				}
+				else
+				{
+					llvm::Value* lValue = m_Recompiler.CreateLoadX8();
+					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformCmp8( lValue, rValue );
+				}
 			}
 			break;
 			case 0xC0: // CPY immediate
 			{
-				llvm::Value* lValue = m_Recompiler.CreateLoadY();
-				llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-				m_Recompiler.PerformCmp( lValue, rValue );
+				if ( instruction.GetIndexMode() == SIXTEEN_BIT )
+				{
+					llvm::Value* lValue = m_Recompiler.CreateLoadY16();
+					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformCmp16( lValue, rValue );
+				}
+				else
+				{
+					llvm::Value* lValue = m_Recompiler.CreateLoadY8();
+					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformCmp8( lValue, rValue );
+				}
 			}
 			break;
 			case 0x18: // CLC implied
@@ -339,19 +366,34 @@ void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
 	m_IRBuilder.SetInsertPoint( basicBlock );
 }
 
-llvm::Value* Recompiler::CreateLoadA( void )
+llvm::Value* Recompiler::CreateLoadA16( void )
 {
-	return m_IRBuilder.CreateLoad( &m_registerA, "" );
+	return &m_registerA;
 }
 
-llvm::Value* Recompiler::CreateLoadX( void )
+llvm::Value* Recompiler::CreateLoadA8( void )
 {
-	return m_IRBuilder.CreateLoad( &m_registerX, "" );
+	return m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
 }
 
-llvm::Value* Recompiler::CreateLoadY( void )
+llvm::Value* Recompiler::CreateLoadX16( void )
 {
-	return m_IRBuilder.CreateLoad( &m_registerY, "" );
+	return &m_registerX;
+}
+
+llvm::Value* Recompiler::CreateLoadX8( void )
+{
+	return m_IRBuilder.CreateBitCast( &m_registerX, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+}
+
+llvm::Value* Recompiler::CreateLoadY16( void )
+{
+	return &m_registerY;
+}
+
+llvm::Value* Recompiler::CreateLoadY8( void )
+{
+	return m_IRBuilder.CreateBitCast( &m_registerY, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
 }
 
 void Recompiler::ClearCarry()
@@ -396,11 +438,19 @@ void Recompiler::ClearOverflow()
 	m_IRBuilder.CreateStore( v, &m_registerStatusOverflow );
 }
 
-void Recompiler::PerformCmp( llvm::Value* lValue, llvm::Value* rValue )
+void Recompiler::PerformCmp16( llvm::Value* lValue, llvm::Value* rValue )
 {
 	llvm::Value* diff = m_IRBuilder.CreateSub( lValue, rValue, "" );
-	TestAndSetZero( diff );
-	TestAndSetNegative( diff );
+	TestAndSetZero16( diff );
+	TestAndSetNegative16( diff );
+	TestAndSetCarrySubtraction( lValue, rValue );
+}
+
+void Recompiler::PerformCmp8( llvm::Value* lValue, llvm::Value* rValue )
+{
+	llvm::Value* diff = m_IRBuilder.CreateSub( lValue, rValue, "" );
+	TestAndSetZero8( diff );
+	TestAndSetNegative8( diff );
 	TestAndSetCarrySubtraction( lValue, rValue );
 }
 
@@ -413,46 +463,46 @@ void Recompiler::TestAndSetCarrySubtraction( llvm::Value* lValue, llvm::Value* r
 void Recompiler::PerformLdy16( llvm::Value* value )
 {
 	m_IRBuilder.CreateStore( value, &m_registerX );
-	TestAndSetZero( value );
-	TestAndSetNegative( value );
+	TestAndSetZero16( value );
+	TestAndSetNegative16( value );
 }
 
 void Recompiler::PerformLdy8( llvm::Value* value )
 {
 	llvm::Value* writeRegisterY8Bit = m_IRBuilder.CreateBitCast( &m_registerY, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
 	m_IRBuilder.CreateStore( value, writeRegisterY8Bit );
-	TestAndSetZero( value );
-	TestAndSetNegative( value );
+	TestAndSetZero8( writeRegisterY8Bit );
+	TestAndSetNegative8( writeRegisterY8Bit );
 }
 
 void Recompiler::PerformLdx16( llvm::Value* value )
 {
 	m_IRBuilder.CreateStore( value, &m_registerX );
-	TestAndSetZero( value );
-	TestAndSetNegative( value );
+	TestAndSetZero16( value );
+	TestAndSetNegative16( value );
 }
 
 void Recompiler::PerformLdx8( llvm::Value* value )
 {
 	llvm::Value* writeRegisterX8Bit = m_IRBuilder.CreateBitCast( &m_registerX, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
 	m_IRBuilder.CreateStore( value, writeRegisterX8Bit );
-	TestAndSetZero( value );
-	TestAndSetNegative( value );
+	TestAndSetZero8( writeRegisterX8Bit );
+	TestAndSetNegative8( writeRegisterX8Bit );
 }
 
 void Recompiler::PerformLda16( llvm::Value* value )
 {
 	m_IRBuilder.CreateStore( value, &m_registerA );
-	TestAndSetZero( value );
-	TestAndSetNegative( value );
+	TestAndSetZero16( value );
+	TestAndSetNegative16( value );
 }
 
 void Recompiler::PerformLda8( llvm::Value* value )
 {
 	llvm::Value* writeRegisterA8Bit = m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
 	m_IRBuilder.CreateStore( value, writeRegisterA8Bit );
-	TestAndSetZero( value );
-	TestAndSetNegative( value );
+	TestAndSetZero8( writeRegisterA8Bit );
+	TestAndSetNegative8( writeRegisterA8Bit );
 }
 
 void Recompiler::PerformOra( llvm::Value* value )
@@ -460,20 +510,38 @@ void Recompiler::PerformOra( llvm::Value* value )
 	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
 	llvm::Value* newA = m_IRBuilder.CreateOr( loadA, value, "" );
 	m_IRBuilder.CreateStore( newA, &m_registerA );
-	TestAndSetZero( newA );
-	TestAndSetNegative( newA );
+	TestAndSetZero16( newA );
+	TestAndSetNegative16( newA );
 }
 
-void Recompiler::TestAndSetZero( llvm::Value* value )
+void Recompiler::TestAndSetZero16( llvm::Value* value )
 {
 	llvm::Value* zeroConst = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0, false ) );
 	llvm::Value* isZero = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, value, zeroConst, "" );
 	m_IRBuilder.CreateStore( isZero, &m_registerStatusZero );
 }
 
-void Recompiler::TestAndSetNegative( llvm::Value* value )
+void Recompiler::TestAndSetZero8( llvm::Value* value )
 {
-	// TODO implement me.
+	llvm::Value* zeroConst = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0, false ) );
+	llvm::Value* isZero = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, value, zeroConst, "" );
+	m_IRBuilder.CreateStore( isZero, &m_registerStatusZero );
+}
+
+void Recompiler::TestAndSetNegative16( llvm::Value* value )
+{
+	llvm::Value* x8000 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x8000, false ) );
+	llvm::Value* masked = m_IRBuilder.CreateAnd( value, x8000, "" );
+	llvm::Value* isNeg = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x8000, "" );
+	m_IRBuilder.CreateStore( isNeg, &m_registerStatusNegative );
+}
+
+void Recompiler::TestAndSetNegative8( llvm::Value* value )
+{
+	llvm::Value* x80 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, false ) );
+	llvm::Value* masked = m_IRBuilder.CreateAnd( value, x80, "" );
+	llvm::Value* isNeg = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x80, "" );
+	m_IRBuilder.CreateStore( isNeg, &m_registerStatusNegative );
 }
 
 void Recompiler::LoadAST( const char* filename )
