@@ -7,6 +7,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 Recompiler::Recompiler()
 : m_IRBuilder( m_LLVMContext )
@@ -150,46 +151,68 @@ void Recompiler::GenerateCode()
 			case 0x08:
 				break;
 			case 0x09: // ORA immediate
-				break;
-			case 0x0D: // ORA absolute
 			{
 				llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 				m_Recompiler.PerformOra( operandValue );
 			}
 			break;
-			case 0xAD: // LDA absolute
+			case 0xA9: // LDA immediate
 			{
-				llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-				m_Recompiler.PerformLda( operandValue );
+				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformLda16( operandValue );
+				}
+				else
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformLda8( operandValue );
+				}
 			}
 			break;
-			case 0xAE: // LDX absolute
+			case 0xA2: // LDX immediate
 			{
-				llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-				m_Recompiler.PerformLdx( operandValue );
+				if ( instruction.GetIndexMode() == SIXTEEN_BIT )
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformLdx16( operandValue );
+				}
+				else
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformLdx8( operandValue );
+				}
 			}
 			break;
-			case 0xAC: // LDY absolute
+			case 0xA0: // LDY immediate
 			{
-				llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-				m_Recompiler.PerformLdy( operandValue );
+				if ( instruction.GetIndexMode() == SIXTEEN_BIT )
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformLdy16( operandValue );
+				}
+				else
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformLdy8( operandValue );
+				}
 			}
 			break;
-			case 0xCD: // CMP absolute
+			case 0xC9: // CMP immediate
 			{
 				llvm::Value* lValue = m_Recompiler.CreateLoadA();
 				llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 				m_Recompiler.PerformCmp( lValue, rValue );
 			}
 			break;
-			case 0xEC: // CPX absolute
+			case 0xE0: // CPX immediate
 			{
 				llvm::Value* lValue = m_Recompiler.CreateLoadX();
 				llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 				m_Recompiler.PerformCmp( lValue, rValue );
 			}
 			break;
-			case 0xCC: // CPY absolute
+			case 0xC0: // CPY immediate
 			{
 				llvm::Value* lValue = m_Recompiler.CreateLoadY();
 				llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
@@ -273,14 +296,38 @@ void Recompiler::Recompile()
 	outputStream.flush();
 }
 
+llvm::BasicBlock* Recompiler::CreateIf( llvm::Value* cond )
+{
+	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "else" );
+	elseBlock->moveAfter( m_CurrentBasicBlock );
+	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "then" );
+	thenBlock->moveAfter( m_CurrentBasicBlock );
+	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
+	SelectBlock( thenBlock );
+	return elseBlock;
+}
+
 void Recompiler::AddLabelNameToBasicBlock( const std::string& labelName, llvm::BasicBlock* basicBlock )
 {
 	m_LabelNamesToBasicBlocks.emplace( labelName, basicBlock );
 }
 
+llvm::BasicBlock* Recompiler::CreateBlock( const char* name )
+{
+	llvm::BasicBlock* doneBlock = llvm::BasicBlock::Create( m_LLVMContext, name );
+	doneBlock->moveAfter( m_CurrentBasicBlock );
+	return doneBlock;
+}
+
 void Recompiler::CreateBranch( llvm::BasicBlock* basicBlock )
 {
 	m_IRBuilder.CreateBr( basicBlock );
+}
+
+void Recompiler::SelectBlock( llvm::BasicBlock* basicBlock )
+{
+	m_IRBuilder.SetInsertPoint( basicBlock );
+	m_CurrentBasicBlock = basicBlock;
 }
 
 void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
@@ -359,23 +406,47 @@ void Recompiler::TestAndSetCarrySubtraction( llvm::Value* lValue, llvm::Value* r
 	m_IRBuilder.CreateStore( isCarry, &m_registerStatusCarry );
 }
 
-void Recompiler::PerformLdy( llvm::Value* value )
+void Recompiler::PerformLdy16( llvm::Value* value )
 {
 	m_IRBuilder.CreateStore( value, &m_registerX );
 	TestAndSetZero( value );
 	TestAndSetNegative( value );
 }
 
-void Recompiler::PerformLdx( llvm::Value* value )
+void Recompiler::PerformLdy8( llvm::Value* value )
+{
+	llvm::Value* writeRegisterY8Bit = m_IRBuilder.CreateBitCast( &m_registerY, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	m_IRBuilder.CreateStore( value, writeRegisterY8Bit );
+	TestAndSetZero( value );
+	TestAndSetNegative( value );
+}
+
+void Recompiler::PerformLdx16( llvm::Value* value )
 {
 	m_IRBuilder.CreateStore( value, &m_registerX );
 	TestAndSetZero( value );
 	TestAndSetNegative( value );
 }
 
-void Recompiler::PerformLda( llvm::Value* value )
+void Recompiler::PerformLdx8( llvm::Value* value )
+{
+	llvm::Value* writeRegisterX8Bit = m_IRBuilder.CreateBitCast( &m_registerX, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	m_IRBuilder.CreateStore( value, writeRegisterX8Bit );
+	TestAndSetZero( value );
+	TestAndSetNegative( value );
+}
+
+void Recompiler::PerformLda16( llvm::Value* value )
 {
 	m_IRBuilder.CreateStore( value, &m_registerA );
+	TestAndSetZero( value );
+	TestAndSetNegative( value );
+}
+
+void Recompiler::PerformLda8( llvm::Value* value )
+{
+	llvm::Value* writeRegisterA8Bit = m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	m_IRBuilder.CreateStore( value, writeRegisterA8Bit );
 	TestAndSetZero( value );
 	TestAndSetNegative( value );
 }
@@ -422,11 +493,11 @@ void Recompiler::LoadAST( const char* filename )
 			{
 				if ( node[ "Instruction" ].contains( "operand" ) )
 				{
-					m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ], node[ "Instruction" ][ "operand" ] } );
+					m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ], node[ "Instruction" ][ "operand" ], node[ "Instruction" ][ "memory_mode" ], node[ "Instruction" ][ "index_mode" ] } );
 				}
 				else
 				{
-					m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ] } );
+					m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ], node[ "Instruction" ][ "memory_mode" ], node[ "Instruction" ][ "index_mode" ] } );
 				}
 			}
 		}
@@ -448,18 +519,22 @@ Recompiler::Label::~Label()
 
 }
 
-Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand )
+Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, MemoryMode memoryMode, MemoryMode indexMode )
 	: m_Offset( offset )
 	, m_Opcode( opcode )
 	, m_Operand( operand )
+	, m_MemoryMode( memoryMode )
+	, m_IndexMode( indexMode )
 	, m_HasOperand( true )
 {
 }
 
-Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcode )
+Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode )
 	: m_Offset( offset )
 	, m_Opcode( opcode )
 	, m_Operand( 0 )
+	, m_MemoryMode( memoryMode )
+	, m_IndexMode( indexMode )
 	, m_HasOperand( false )
 {
 }

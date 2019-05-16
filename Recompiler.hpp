@@ -26,12 +26,19 @@ public:
 	const llvm::BasicBlock* GetCurrentBasicBlock( void ) const { return m_CurrentBasicBlock; }
 	void SetCurrentBasicBlock( llvm::BasicBlock* basicBlock ) { m_CurrentBasicBlock = basicBlock; }
 
+	void SelectBlock( llvm::BasicBlock* basicBlock );
+
+	llvm::BasicBlock* CreateBlock( const char* name );
+	llvm::BasicBlock* CreateIf( llvm::Value* cond );
 	void CreateBranch( llvm::BasicBlock* basicBlock );
 	void SetInsertPoint( llvm::BasicBlock* basicBlock );
 	void PerformOra( llvm::Value* value );
-	void PerformLda( llvm::Value* value );
-	void PerformLdx( llvm::Value* value );
-	void PerformLdy( llvm::Value* value );
+	void PerformLda16( llvm::Value* value );
+	void PerformLda8( llvm::Value* value );
+	void PerformLdx16( llvm::Value* value );
+	void PerformLdx8( llvm::Value* value );
+	void PerformLdy16( llvm::Value* value );
+	void PerformLdy8( llvm::Value* value );
 	void PerformCmp( llvm::Value* lValue, llvm::Value* rValue );
 	void TestAndSetZero( llvm::Value* value );
 	void TestAndSetNegative( llvm::Value* value );
@@ -64,21 +71,31 @@ private:
 		uint32_t m_Offset;
 	};
 
+	enum MemoryMode
+	{
+		SIXTEEN_BIT = 0,
+		EIGHT_BIT = 1,
+	};
+
 	class Instruction
 	{
 	public:
-		Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand );
-		Instruction( const uint32_t offset, const uint8_t opcode );
+		Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, MemoryMode memoryMode, MemoryMode indexMode );
+		Instruction( const uint32_t offset, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode );
 		~Instruction();
 
 		uint8_t GetOpcode( void ) const { return m_Opcode; }
 		uint32_t GetOperand( void ) const { return m_Operand; }
 		bool HasOperand( void ) const { return m_HasOperand; }
+		const MemoryMode& GetMemoryMode() const { return m_MemoryMode; }
+		const MemoryMode& GetIndexMode() const { return m_IndexMode; }
 
 	private:
 		uint32_t m_Offset;
 		uint8_t m_Opcode;
 		uint32_t m_Operand;
+		MemoryMode m_MemoryMode;
+		MemoryMode m_IndexMode;
 		bool m_HasOperand;
 	};
 
