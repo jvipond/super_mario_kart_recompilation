@@ -281,6 +281,31 @@ void Recompiler::GenerateCode()
 				m_Recompiler.SetInterrupt();
 			}
 			break;
+			case 0xEB: // XBA
+			{
+				m_Recompiler.PerformXba();
+			}
+			break;
+			case 0x1B: // TCS
+			{
+				m_Recompiler.PerformTcs();
+			}
+			break;
+			case 0x5B: // TCD
+			{
+				m_Recompiler.PerformTcd();
+			}
+			break;
+			case 0x7B: // TDC
+			{
+				m_Recompiler.PerformTdc();
+			}
+			break;
+			case 0x3B: // TSC
+			{
+				m_Recompiler.PerformTsc();
+			}
+			break;
 			}
 		}
 
@@ -366,34 +391,83 @@ void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
 	m_IRBuilder.SetInsertPoint( basicBlock );
 }
 
+void Recompiler::PerformTcs()
+{
+	m_IRBuilder.CreateStore( &m_registerA, &m_registerSP );
+	TestAndSetZero16( &m_registerA );
+	TestAndSetNegative16( &m_registerA );
+}
+
+void Recompiler::PerformTcd()
+{
+	m_IRBuilder.CreateStore( &m_registerA, &m_registerDP );
+	TestAndSetZero16( &m_registerA );
+	TestAndSetNegative16( &m_registerA );
+}
+
+void Recompiler::PerformTdc()
+{
+	m_IRBuilder.CreateStore( &m_registerDP, &m_registerA );
+	TestAndSetZero16( &m_registerDP );
+	TestAndSetNegative16( &m_registerDP );
+}
+
+void Recompiler::PerformTsc()
+{
+	m_IRBuilder.CreateStore( &m_registerSP, &m_registerA );
+	TestAndSetZero16( &m_registerSP );
+	TestAndSetNegative16( &m_registerSP );
+}
+
+void Recompiler::PerformXba()
+{
+	llvm::Value* a8BeforeSwap = CreateLoadA8();
+	llvm::Value* b8BeforeSwap = CreateLoadB8();
+
+	m_IRBuilder.CreateStore( b8BeforeSwap, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+
+	auto a = m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
+	auto b8Ptr = m_IRBuilder.CreateInBoundsGEP( llvm::Type::getInt8Ty( m_LLVMContext ), a, llvm::ConstantInt::get( llvm::Type::getInt32Ty( m_LLVMContext ), 1 ) );
+
+	m_IRBuilder.CreateStore( a8BeforeSwap, b8Ptr );
+}
+
 llvm::Value* Recompiler::CreateLoadA16( void )
 {
-	return &m_registerA;
+	return m_IRBuilder.CreateLoad( &m_registerA, "" );
 }
 
 llvm::Value* Recompiler::CreateLoadA8( void )
 {
-	return m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	return m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ), "" );
+}
+
+llvm::Value* Recompiler::CreateLoadB8( void )
+{
+	llvm::Value* indexList[ 2 ] = { llvm::ConstantInt::get( llvm::Type::getInt32Ty( m_LLVMContext ), 0 ), llvm::ConstantInt::get( llvm::Type::getInt32Ty( m_LLVMContext ), 1 ) };
+	auto v = m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
+	auto a = m_IRBuilder.CreateInBoundsGEP( llvm::Type::getInt8Ty( m_LLVMContext ), v, llvm::ConstantInt::get( llvm::Type::getInt32Ty( m_LLVMContext ), 1 ) );
+	return m_IRBuilder.CreateLoad( a, "" );
 }
 
 llvm::Value* Recompiler::CreateLoadX16( void )
 {
-	return &m_registerX;
+	return m_IRBuilder.CreateLoad( &m_registerX, "" );
 }
 
 llvm::Value* Recompiler::CreateLoadX8( void )
 {
-	return m_IRBuilder.CreateBitCast( &m_registerX, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	return m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerX, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ), "" );
 }
 
 llvm::Value* Recompiler::CreateLoadY16( void )
 {
-	return &m_registerY;
+	return m_IRBuilder.CreateLoad( &m_registerY, "" );
 }
 
 llvm::Value* Recompiler::CreateLoadY8( void )
 {
-	return m_IRBuilder.CreateBitCast( &m_registerY, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	return m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerY, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ), "" );
 }
 
 void Recompiler::ClearCarry()
@@ -469,7 +543,7 @@ void Recompiler::PerformLdy16( llvm::Value* value )
 
 void Recompiler::PerformLdy8( llvm::Value* value )
 {
-	llvm::Value* writeRegisterY8Bit = m_IRBuilder.CreateBitCast( &m_registerY, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	llvm::Value* writeRegisterY8Bit = m_IRBuilder.CreateBitCast( &m_registerY, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
 	m_IRBuilder.CreateStore( value, writeRegisterY8Bit );
 	TestAndSetZero8( writeRegisterY8Bit );
 	TestAndSetNegative8( writeRegisterY8Bit );
@@ -484,7 +558,7 @@ void Recompiler::PerformLdx16( llvm::Value* value )
 
 void Recompiler::PerformLdx8( llvm::Value* value )
 {
-	llvm::Value* writeRegisterX8Bit = m_IRBuilder.CreateBitCast( &m_registerX, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	llvm::Value* writeRegisterX8Bit = m_IRBuilder.CreateBitCast( &m_registerX, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
 	m_IRBuilder.CreateStore( value, writeRegisterX8Bit );
 	TestAndSetZero8( writeRegisterX8Bit );
 	TestAndSetNegative8( writeRegisterX8Bit );
@@ -499,7 +573,7 @@ void Recompiler::PerformLda16( llvm::Value* value )
 
 void Recompiler::PerformLda8( llvm::Value* value )
 {
-	llvm::Value* writeRegisterA8Bit = m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	llvm::Value* writeRegisterA8Bit = m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
 	m_IRBuilder.CreateStore( value, writeRegisterA8Bit );
 	TestAndSetZero8( writeRegisterA8Bit );
 	TestAndSetNegative8( writeRegisterA8Bit );

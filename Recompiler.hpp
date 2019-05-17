@@ -46,6 +46,11 @@ public:
 	void TestAndSetNegative16( llvm::Value* value );
 	void TestAndSetNegative8( llvm::Value* value );
 	void TestAndSetCarrySubtraction( llvm::Value* lValue, llvm::Value* rValue );
+	void PerformXba();
+	void PerformTcs();
+	void PerformTcd();
+	void PerformTdc();
+	void PerformTsc();
 	void ClearCarry();
 	void SetCarry();
 	void ClearDecimal();
@@ -55,6 +60,7 @@ public:
 	void ClearOverflow();
 	llvm::Value* CreateLoadA16( void );
 	llvm::Value* CreateLoadA8( void );
+	llvm::Value* CreateLoadB8( void );
 	llvm::Value* CreateLoadX16( void );
 	llvm::Value* CreateLoadX8( void );
 	llvm::Value* CreateLoadY16( void );
