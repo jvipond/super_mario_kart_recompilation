@@ -53,7 +53,7 @@ public:
 	void PerformTsc();
 	void PerformRtl();
 	void PerformRts();
-	void PerformBra( const uint32_t instructionAddress, const int8_t jump );
+	void PerformBra( const std::string& labelName );
 	void PerformJmp( const std::string& labelName );
 	llvm::Value* PullFromStack();
 	llvm::Value* PullWordFromStack();

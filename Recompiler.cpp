@@ -322,7 +322,7 @@ void Recompiler::GenerateCode()
 			break;
 			case 0x80: // BRA
 			{
-				m_Recompiler.PerformBra( instruction.GetOffset(), static_cast<int8_t>( instruction.GetOperand() ) );
+				m_Recompiler.PerformBra( instruction.GetJumpLabelName() );
 			}
 			break;
 			case 0x4C: // JMP abs
@@ -428,14 +428,9 @@ void Recompiler::PerformJmp( const std::string& labelName )
 	}
 }
 
-void Recompiler::PerformBra( const uint32_t instructionAddress, const int8_t jump )
+void Recompiler::PerformBra( const std::string& labelName )
 {
-	const int32_t newAddress = instructionAddress + jump + 2;
-	auto search = m_OffsetsToLabelNames.find( newAddress );
-	if ( search != m_OffsetsToLabelNames.end() )
-	{
-		m_IRBuilder.CreateBr( m_LabelNamesToBasicBlocks[ search->second ] );
-	}
+	PerformJmp( labelName );
 }
 
 void Recompiler::PerformRtl()
