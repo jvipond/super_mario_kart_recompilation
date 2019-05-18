@@ -94,8 +94,11 @@ void Recompiler::AddDynamicJumpTableBlock()
 	m_DynamicJumpTableBlock = llvm::BasicBlock::Create( m_LLVMContext, "DynamicJumpTable", m_MainFunction );
 	m_IRBuilder.SetInsertPoint( m_DynamicJumpTableBlock );
 
-	auto pc = m_IRBuilder.CreateLoad( &m_registerPC, "" );
-	auto sw = m_IRBuilder.CreateSwitch( pc, dynamicJumpTableDefaultCaseBlock, static_cast<unsigned int>( m_LabelNamesToOffsets.size() ) );
+	auto pc32 = m_IRBuilder.CreateZExt( &m_registerPC, llvm::Type::getInt32Ty( m_LLVMContext ), "" );
+	auto pb32 = m_IRBuilder.CreateZExt( &m_registerPB, llvm::Type::getInt32Ty( m_LLVMContext ), "" );
+	auto pb32Shifted = m_IRBuilder.CreateShl( pb32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 24 ), false ) ), "" );
+	auto finalPC = m_IRBuilder.CreateOr( pc32, pb32Shifted, "" );
+	auto sw = m_IRBuilder.CreateSwitch( finalPC, dynamicJumpTableDefaultCaseBlock, static_cast<unsigned int>( m_LabelNamesToOffsets.size() ) );
 	for ( auto&& entry : m_LabelNamesToOffsets )
 	{
 		auto addressValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( entry.second ), false ) );
