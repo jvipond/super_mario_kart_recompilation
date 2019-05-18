@@ -7,7 +7,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
-#include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/IR/Verifier.h"
 
 Recompiler::Recompiler()
 : m_IRBuilder( m_LLVMContext )
@@ -31,6 +31,7 @@ Recompiler::Recompiler()
 , m_registerStatusOverflow( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusOverflow" )
 , m_registerStatusIndexWidth( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusIndexWidth" )
 , m_registerStatusZero( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusZero" )
+, m_wRam( m_RecompilationModule, llvm::ArrayType::get( llvm::Type::getInt8Ty( m_LLVMContext ), 0x20000 ), false, llvm::GlobalValue::ExternalLinkage, 0, "wRam" )
 , m_CurrentBasicBlock( nullptr )
 {
 
@@ -55,6 +56,7 @@ Recompiler::~Recompiler()
 	m_registerStatusOverflow.removeFromParent();
 	m_registerStatusIndexWidth.removeFromParent();
 	m_registerStatusZero.removeFromParent();
+	m_wRam.removeFromParent();
 }
 
 // Visit all the Label nodes and set up the basic blocks:
@@ -309,6 +311,11 @@ void Recompiler::GenerateCode()
 				m_Recompiler.PerformTsc();
 			}
 			break;
+			case 0x60: // RTS
+			{
+				m_Recompiler.PerformRts();
+			}
+			break;
 			}
 		}
 
@@ -345,6 +352,9 @@ void Recompiler::Recompile()
 	// Add return value of 0:
 	llvm::Value* returnValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0, true ) );
 	m_IRBuilder.CreateRet( returnValue );
+
+	
+	llvm::verifyModule( m_RecompilationModule, &llvm::errs() );
 
 	std::error_code EC;
 	llvm::raw_fd_ostream outputHumanReadable( "smk.human_readable.bc", EC );
@@ -392,6 +402,36 @@ void Recompiler::SelectBlock( llvm::BasicBlock* basicBlock )
 void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
 {
 	m_IRBuilder.SetInsertPoint( basicBlock );
+}
+
+void Recompiler::PerformRts()
+{
+	auto addr = PullWordFromStack();
+	auto pc = m_IRBuilder.CreateAdd( addr, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 1, false ) ), "" );
+	m_IRBuilder.CreateStore( pc, &m_registerPC );
+	m_IRBuilder.CreateBr( m_DynamicJumpTableBlock );
+	m_CurrentBasicBlock = nullptr;
+}
+
+llvm::Value* Recompiler::PullFromStack()
+{
+	// increment stack pointer
+	auto sp = m_IRBuilder.CreateLoad( &m_registerSP, "" );
+	auto spPlusOne = m_IRBuilder.CreateAdd( sp, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 1, false ) ), "" );
+	m_IRBuilder.CreateStore( spPlusOne, &m_registerSP );
+	// read the value at stack pointer
+	auto ptr = m_IRBuilder.CreateInBoundsGEP( llvm::Type::getInt8Ty( m_LLVMContext ), &m_wRam, spPlusOne );
+	return m_IRBuilder.CreateLoad( ptr, "" );
+}
+
+llvm::Value* Recompiler::PullWordFromStack()
+{
+	auto low = PullFromStack();
+	auto high = PullFromStack();
+	auto low16 = m_IRBuilder.CreateZExt( low, llvm::Type::getInt16Ty( m_LLVMContext ), "" );
+	auto high16 = m_IRBuilder.CreateZExt( high, llvm::Type::getInt16Ty( m_LLVMContext ), "" );
+	auto word = m_IRBuilder.CreateShl( high16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 8, false ) ), "" );
+	return m_IRBuilder.CreateOr( word, low16, "" );
 }
 
 void Recompiler::PerformTcs()

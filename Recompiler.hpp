@@ -51,6 +51,9 @@ public:
 	void PerformTcd();
 	void PerformTdc();
 	void PerformTsc();
+	void PerformRts();
+	llvm::Value* PullFromStack();
+	llvm::Value* PullWordFromStack();
 	void ClearCarry();
 	void SetCarry();
 	void ClearDecimal();
@@ -141,6 +144,7 @@ private:
 	llvm::GlobalVariable m_registerStatusOverflow;
 	llvm::GlobalVariable m_registerStatusIndexWidth;
 	llvm::GlobalVariable m_registerStatusZero;
+	llvm::GlobalVariable m_wRam;
 
 	llvm::BasicBlock* m_CurrentBasicBlock;
 };
