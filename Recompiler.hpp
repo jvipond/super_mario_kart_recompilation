@@ -51,7 +51,9 @@ public:
 	void PerformTcd();
 	void PerformTdc();
 	void PerformTsc();
+	void PerformRtl();
 	void PerformRts();
+	void PerformBra( const uint32_t instructionAddress, const int8_t jump );
 	llvm::Value* PullFromStack();
 	llvm::Value* PullWordFromStack();
 	void ClearCarry();
@@ -102,6 +104,7 @@ private:
 		bool HasOperand( void ) const { return m_HasOperand; }
 		const MemoryMode& GetMemoryMode() const { return m_MemoryMode; }
 		const MemoryMode& GetIndexMode() const { return m_IndexMode; }
+		uint32_t GetOffset( void ) const { return m_Offset; }
 
 	private:
 		uint32_t m_Offset;
@@ -121,6 +124,7 @@ private:
 	std::string m_RomResetLabelName;
 	std::vector< std::variant<Label, Instruction> > m_Program;
 	std::map< std::string, uint32_t > m_LabelNamesToOffsets;
+	std::map< uint32_t, std::string > m_OffsetsToLabelNames;
 	std::map< std::string, llvm::BasicBlock* > m_LabelNamesToBasicBlocks;
 	std::map< uint32_t, llvm::BasicBlock* > m_DynamicJumpOffsetsToBasicBlocks;
 

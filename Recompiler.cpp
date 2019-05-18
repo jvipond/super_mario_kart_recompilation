@@ -316,6 +316,16 @@ void Recompiler::GenerateCode()
 				m_Recompiler.PerformRts();
 			}
 			break;
+			case 0x6B: // RTL
+			{
+				m_Recompiler.PerformRtl();
+			}
+			break;
+			case 0x80: // BRA
+			{
+				m_Recompiler.PerformBra( instruction.GetOffset(), static_cast<int8_t>( instruction.GetOperand() ) );
+			}
+			break;
 			}
 		}
 
@@ -402,6 +412,27 @@ void Recompiler::SelectBlock( llvm::BasicBlock* basicBlock )
 void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
 {
 	m_IRBuilder.SetInsertPoint( basicBlock );
+}
+
+void Recompiler::PerformBra( const uint32_t instructionAddress, const int8_t jump )
+{
+	const int32_t newAddress = instructionAddress + jump + 2;
+	auto search = m_OffsetsToLabelNames.find( newAddress );
+	if ( search != m_OffsetsToLabelNames.end() )
+	{
+		m_IRBuilder.CreateBr( m_LabelNamesToBasicBlocks[ search->second ] );
+	}
+}
+
+void Recompiler::PerformRtl()
+{
+	auto addr = PullWordFromStack();
+	auto pc = m_IRBuilder.CreateAdd( addr, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 1, false ) ), "" );
+	m_IRBuilder.CreateStore( pc, &m_registerPC );
+	auto k = PullFromStack();
+	m_IRBuilder.CreateStore( k, &m_registerPB );
+	m_IRBuilder.CreateBr( m_DynamicJumpTableBlock );
+	m_CurrentBasicBlock = nullptr;
 }
 
 void Recompiler::PerformRts()
@@ -678,6 +709,7 @@ void Recompiler::LoadAST( const char* filename )
 			{
 				m_Program.emplace_back( Label{ node[ "Label" ][ "name" ], node[ "Label" ][ "offset" ] } );
 				m_LabelNamesToOffsets.emplace( node[ "Label" ][ "name" ], node[ "Label" ][ "offset" ] );
+				m_OffsetsToLabelNames.emplace( node[ "Label" ][ "offset" ], node[ "Label" ][ "name" ] );
 			}
 			else if ( node.contains( "Instruction" ) )
 			{
