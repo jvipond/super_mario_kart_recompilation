@@ -31,10 +31,9 @@ Recompiler::Recompiler()
 , m_registerStatusOverflow( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusOverflow" )
 , m_registerStatusIndexWidth( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusIndexWidth" )
 , m_registerStatusZero( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusZero" )
-, m_wRam( m_RecompilationModule, llvm::ArrayType::get( llvm::Type::getInt8Ty( m_LLVMContext ), 0x20000 ), false, llvm::GlobalValue::ExternalLinkage, 0, "wRam" )
+, m_wRam( m_RecompilationModule, llvm::ArrayType::get( llvm::Type::getInt8Ty( m_LLVMContext ), WRAM_SIZE ), false, llvm::GlobalValue::ExternalLinkage, 0, "wRam" )
 , m_CurrentBasicBlock( nullptr )
 {
-
 }
 
 Recompiler::~Recompiler()
@@ -326,6 +325,12 @@ void Recompiler::GenerateCode()
 				m_Recompiler.PerformBra( instruction.GetOffset(), static_cast<int8_t>( instruction.GetOperand() ) );
 			}
 			break;
+			case 0x4C: // JMP abs
+			case 0x5C: // JMP long
+			{		
+				m_Recompiler.PerformJmp( instruction.GetJumpLabelName() );
+			}
+			break;
 			}
 		}
 
@@ -414,6 +419,15 @@ void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
 	m_IRBuilder.SetInsertPoint( basicBlock );
 }
 
+void Recompiler::PerformJmp( const std::string& labelName )
+{
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		m_IRBuilder.CreateBr( search->second );
+	}
+}
+
 void Recompiler::PerformBra( const uint32_t instructionAddress, const int8_t jump )
 {
 	const int32_t newAddress = instructionAddress + jump + 2;
@@ -451,7 +465,7 @@ llvm::Value* Recompiler::PullFromStack()
 	auto spPlusOne = m_IRBuilder.CreateAdd( sp, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 1, false ) ), "" );
 	m_IRBuilder.CreateStore( spPlusOne, &m_registerSP );
 	// read the value at stack pointer
-	auto ptr = m_IRBuilder.CreateInBoundsGEP( llvm::Type::getInt8Ty( m_LLVMContext ), &m_wRam, spPlusOne );
+	auto ptr = m_IRBuilder.CreateInBoundsGEP( m_wRam.getType()->getPointerElementType(), &m_wRam, spPlusOne );
 	return m_IRBuilder.CreateLoad( ptr, "" );
 }
 
@@ -715,7 +729,14 @@ void Recompiler::LoadAST( const char* filename )
 			{
 				if ( node[ "Instruction" ].contains( "operand" ) )
 				{
-					m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ], node[ "Instruction" ][ "operand" ], node[ "Instruction" ][ "operand_size" ],  node[ "Instruction" ][ "memory_mode" ], node[ "Instruction" ][ "index_mode" ] } );
+					if ( node[ "Instruction" ].contains( "jump_label_name" ) )
+					{
+						m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ], node[ "Instruction" ][ "operand" ], node[ "Instruction" ][ "jump_label_name" ],  node[ "Instruction" ][ "operand_size" ],  node[ "Instruction" ][ "memory_mode" ], node[ "Instruction" ][ "index_mode" ] } );
+					}
+					else
+					{
+						m_Program.emplace_back( Instruction{ node[ "Instruction" ][ "offset" ], node[ "Instruction" ][ "opcode" ], node[ "Instruction" ][ "operand" ], node[ "Instruction" ][ "operand_size" ],  node[ "Instruction" ][ "memory_mode" ], node[ "Instruction" ][ "index_mode" ] } );
+					}
 				}
 				else
 				{
@@ -745,6 +766,17 @@ Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcod
 	: m_Offset( offset )
 	, m_Opcode( opcode )
 	, m_Operand( operand )
+	, m_MemoryMode( memoryMode )
+	, m_IndexMode( indexMode )
+	, m_HasOperand( true )
+{
+}
+
+Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode )
+	: m_Offset( offset )
+	, m_Opcode( opcode )
+	, m_Operand( operand )
+	, m_JumpLabelName( jumpLabelName )
 	, m_MemoryMode( memoryMode )
 	, m_IndexMode( indexMode )
 	, m_HasOperand( true )

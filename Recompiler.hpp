@@ -54,6 +54,7 @@ public:
 	void PerformRtl();
 	void PerformRts();
 	void PerformBra( const uint32_t instructionAddress, const int8_t jump );
+	void PerformJmp( const std::string& labelName );
 	llvm::Value* PullFromStack();
 	llvm::Value* PullWordFromStack();
 	void ClearCarry();
@@ -95,6 +96,7 @@ private:
 	{
 	public:
 		Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode );
+		Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode );
 		Instruction( const uint32_t offset, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode );
 		~Instruction();
 
@@ -105,11 +107,13 @@ private:
 		const MemoryMode& GetMemoryMode() const { return m_MemoryMode; }
 		const MemoryMode& GetIndexMode() const { return m_IndexMode; }
 		uint32_t GetOffset( void ) const { return m_Offset; }
+		const std::string& GetJumpLabelName( void ) const { return m_JumpLabelName; }
 
 	private:
 		uint32_t m_Offset;
 		uint8_t m_Opcode;
 		uint32_t m_Operand;
+		std::string m_JumpLabelName;
 		uint32_t m_OperandSize;
 		MemoryMode m_MemoryMode;
 		MemoryMode m_IndexMode;
@@ -148,6 +152,8 @@ private:
 	llvm::GlobalVariable m_registerStatusOverflow;
 	llvm::GlobalVariable m_registerStatusIndexWidth;
 	llvm::GlobalVariable m_registerStatusZero;
+
+	static const uint32_t WRAM_SIZE = 0x20000;
 	llvm::GlobalVariable m_wRam;
 
 	llvm::BasicBlock* m_CurrentBasicBlock;
