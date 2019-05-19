@@ -320,6 +320,11 @@ void Recompiler::GenerateCode()
 				m_Recompiler.PerformRtl();
 			}
 			break;
+			case 0x40: // RTI
+			{
+				m_Recompiler.PerformRti();
+			}
+			break;
 			case 0x80: // BRA
 			{
 				m_Recompiler.PerformBra( instruction.GetJumpLabelName() );
@@ -329,6 +334,12 @@ void Recompiler::GenerateCode()
 			case 0x5C: // JMP long
 			{		
 				m_Recompiler.PerformJmp( instruction.GetJumpLabelName() );
+			}
+			break;
+			case 0xF4: // PEA
+			{
+				llvm::Value* value = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
+				m_Recompiler.PerformPea( value );
 			}
 			break;
 			}
@@ -433,13 +444,29 @@ void Recompiler::PerformBra( const std::string& labelName )
 	PerformJmp( labelName );
 }
 
+void Recompiler::PerformPea( llvm::Value* value )
+{
+	PushWordToStack( value );
+}
+
+void Recompiler::PerformRti()
+{
+	auto p = PullByteFromStack();
+	auto pc = PullWordFromStack();
+	auto pb = PullByteFromStack();
+
+	// TODO - need to set processor status register here.
+	m_IRBuilder.CreateStore( pc, &m_registerPC );
+	m_IRBuilder.CreateStore( pb, &m_registerPB );
+}
+
 void Recompiler::PerformRtl()
 {
 	auto addr = PullWordFromStack();
 	auto pc = m_IRBuilder.CreateAdd( addr, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 1, false ) ), "" );
 	m_IRBuilder.CreateStore( pc, &m_registerPC );
-	auto k = PullFromStack();
-	m_IRBuilder.CreateStore( k, &m_registerPB );
+	auto pb = PullByteFromStack();
+	m_IRBuilder.CreateStore( pb, &m_registerPB );
 	m_IRBuilder.CreateBr( m_DynamicJumpTableBlock );
 	m_CurrentBasicBlock = nullptr;
 }
@@ -453,7 +480,7 @@ void Recompiler::PerformRts()
 	m_CurrentBasicBlock = nullptr;
 }
 
-llvm::Value* Recompiler::PullFromStack()
+llvm::Value* Recompiler::PullByteFromStack()
 {
 	// increment stack pointer
 	auto sp = m_IRBuilder.CreateLoad( &m_registerSP, "" );
@@ -466,12 +493,35 @@ llvm::Value* Recompiler::PullFromStack()
 
 llvm::Value* Recompiler::PullWordFromStack()
 {
-	auto low = PullFromStack();
-	auto high = PullFromStack();
+	auto low = PullByteFromStack();
+	auto high = PullByteFromStack();
 	auto low16 = m_IRBuilder.CreateZExt( low, llvm::Type::getInt16Ty( m_LLVMContext ), "" );
 	auto high16 = m_IRBuilder.CreateZExt( high, llvm::Type::getInt16Ty( m_LLVMContext ), "" );
 	auto word = m_IRBuilder.CreateShl( high16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 8, false ) ), "" );
 	return m_IRBuilder.CreateOr( word, low16, "" );
+}
+
+void Recompiler::PushByteToStack( llvm::Value* value )
+{
+	// write the value to the address at current stack pointer
+	auto sp = m_IRBuilder.CreateLoad( &m_registerSP, "" );
+	auto ptr = m_IRBuilder.CreateInBoundsGEP( m_wRam.getType()->getPointerElementType(), &m_wRam, sp );
+	m_IRBuilder.CreateStore( value, ptr );
+
+	// stack pointer = stack pointer - 1
+	auto spMinusOne = m_IRBuilder.CreateSub( sp, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 1, false ) ), "" );
+	m_IRBuilder.CreateStore( spMinusOne, &m_registerSP );
+}
+
+void Recompiler::PushWordToStack( llvm::Value* value )
+{
+	auto high16 = m_IRBuilder.CreateShl( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 8, false ) ), "" );
+	auto high = m_IRBuilder.CreateTrunc( high16, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	PushByteToStack( high );
+
+	auto low16 = m_IRBuilder.CreateAnd( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0xff, false ) ), "" );
+	auto low= m_IRBuilder.CreateTrunc( low16, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	PushByteToStack( low );
 }
 
 void Recompiler::PerformTcs()

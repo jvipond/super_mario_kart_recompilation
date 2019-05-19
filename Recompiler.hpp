@@ -53,10 +53,14 @@ public:
 	void PerformTsc();
 	void PerformRtl();
 	void PerformRts();
+	void PerformRti();
+	void PerformPea( llvm::Value* value );
 	void PerformBra( const std::string& labelName );
 	void PerformJmp( const std::string& labelName );
-	llvm::Value* PullFromStack();
+	llvm::Value* PullByteFromStack();
 	llvm::Value* PullWordFromStack();
+	void PushByteToStack( llvm::Value* value );
+	void PushWordToStack( llvm::Value* value );
 	void ClearCarry();
 	void SetCarry();
 	void ClearDecimal();
