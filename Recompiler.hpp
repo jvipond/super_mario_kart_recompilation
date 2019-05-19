@@ -57,6 +57,10 @@ public:
 	void PerformPea( llvm::Value* value );
 	void PerformBra( const std::string& labelName );
 	void PerformJmp( const std::string& labelName );
+	void PerformJsr( const std::string& labelName );
+	void PerformJsl( const std::string& labelName );
+	void PerformSep( llvm::Value* value );
+	void PerformRep( llvm::Value* value );
 	llvm::Value* PullByteFromStack();
 	llvm::Value* PullWordFromStack();
 	void PushByteToStack( llvm::Value* value );
@@ -147,6 +151,7 @@ private:
 	llvm::GlobalVariable m_registerSP;
 	llvm::GlobalVariable m_registerX;
 	llvm::GlobalVariable m_registerY;
+	llvm::GlobalVariable m_registerP;
 	llvm::GlobalVariable m_registerStatusBreak;
 	llvm::GlobalVariable m_registerStatusCarry;
 	llvm::GlobalVariable m_registerStatusDecimal;

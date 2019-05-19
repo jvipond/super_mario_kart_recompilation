@@ -22,6 +22,7 @@ Recompiler::Recompiler()
 , m_registerSP( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "SP" )
 , m_registerX( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "X" )
 , m_registerY( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "Y" )
+, m_registerP( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "P" )
 , m_registerStatusBreak( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusBreak" )
 , m_registerStatusCarry( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusCarry" )
 , m_registerStatusDecimal( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusDecimal" )
@@ -46,6 +47,7 @@ Recompiler::~Recompiler()
 	m_registerSP.removeFromParent();
 	m_registerX.removeFromParent();
 	m_registerY.removeFromParent();
+	m_registerP.removeFromParent();
 	m_registerStatusBreak.removeFromParent();
 	m_registerStatusCarry.removeFromParent();
 	m_registerStatusDecimal.removeFromParent();
@@ -342,6 +344,23 @@ void Recompiler::GenerateCode()
 				m_Recompiler.PerformPea( value );
 			}
 			break;
+			case 0xC2: // REP
+			{
+				llvm::Value* value = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
+				m_Recompiler.PerformRep( value );
+			}
+			break;
+			case 0xE2: // SEP
+			{
+				llvm::Value* value = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
+				m_Recompiler.PerformSep( value );
+			}
+			break;
+			case 0x20: // JSR absolute
+			{
+				m_Recompiler.PerformBra( instruction.GetJumpLabelName() );
+			}
+			break;
 			}
 		}
 
@@ -428,6 +447,42 @@ void Recompiler::SelectBlock( llvm::BasicBlock* basicBlock )
 void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
 {
 	m_IRBuilder.SetInsertPoint( basicBlock );
+}
+
+void Recompiler::PerformSep( llvm::Value* value )
+{
+	auto result = m_IRBuilder.CreateOr( &m_registerP, value, "" );
+	m_IRBuilder.CreateStore( result, &m_registerP );
+}
+
+void Recompiler::PerformRep( llvm::Value* value )
+{
+	auto complement = m_IRBuilder.CreateXor( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ), "" );
+	auto result = m_IRBuilder.CreateAnd( &m_registerP, complement, "" );
+	m_IRBuilder.CreateStore( result, &m_registerP );
+}
+
+void Recompiler::PerformJsl( const std::string& labelName )
+{
+	PushByteToStack( &m_registerPB );
+	auto pcPlus3 = m_IRBuilder.CreateAdd( &m_registerPC, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 3, false ) ), "" );
+	PushWordToStack( pcPlus3 );
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		m_IRBuilder.CreateBr( search->second );
+	}
+}
+
+void Recompiler::PerformJsr( const std::string& labelName )
+{
+	auto pcPlus2 = m_IRBuilder.CreateAdd( &m_registerPC, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 2, false ) ), "" );
+	PushWordToStack( pcPlus2  );
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		m_IRBuilder.CreateBr( search->second );
+	}
 }
 
 void Recompiler::PerformJmp( const std::string& labelName )
