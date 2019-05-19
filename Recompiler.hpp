@@ -59,6 +59,7 @@ public:
 	void PerformJmp( const std::string& labelName );
 	void PerformJsr( const std::string& labelName );
 	void PerformJsl( const std::string& labelName );
+	void PerformBcc( const std::string& labelName );
 	void PerformSep( llvm::Value* value );
 	void PerformRep( llvm::Value* value );
 	llvm::Value* PullByteFromStack();

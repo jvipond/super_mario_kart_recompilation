@@ -358,7 +358,17 @@ void Recompiler::GenerateCode()
 			break;
 			case 0x20: // JSR absolute
 			{
-				m_Recompiler.PerformBra( instruction.GetJumpLabelName() );
+				m_Recompiler.PerformJsr( instruction.GetJumpLabelName() );
+			}
+			break;
+			case 0x22: // JSL long
+			{
+				m_Recompiler.PerformJsl( instruction.GetJumpLabelName() );
+			}
+			break;
+			case 0x90: // BCC
+			{
+				m_Recompiler.PerformBcc( instruction.GetJumpLabelName() );
 			}
 			break;
 			}
@@ -460,6 +470,16 @@ void Recompiler::PerformRep( llvm::Value* value )
 	auto complement = m_IRBuilder.CreateXor( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ), "" );
 	auto result = m_IRBuilder.CreateAnd( &m_registerP, complement, "" );
 	m_IRBuilder.CreateStore( result, &m_registerP );
+}
+
+void Recompiler::PerformBcc( const std::string& labelName )
+{
+	// TODO do test of c flag from prcoessor status register.
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		m_IRBuilder.CreateBr( search->second );
+	}
 }
 
 void Recompiler::PerformJsl( const std::string& labelName )
