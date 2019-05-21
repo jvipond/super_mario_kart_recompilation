@@ -371,6 +371,41 @@ void Recompiler::GenerateCode()
 				m_Recompiler.PerformBcc( instruction.GetJumpLabelName() );
 			}
 			break;
+			case 0xB0: // BCS
+			{
+				m_Recompiler.PerformBcs( instruction.GetJumpLabelName() );
+			}
+			break;
+			case 0xF0: // BEQ
+			{
+				m_Recompiler.PerformBeq( instruction.GetJumpLabelName() );
+			}
+			break;
+			case 0xD0: // BNE
+			{
+				m_Recompiler.PerformBne( instruction.GetJumpLabelName() );
+			}
+			break;
+			case 0x30: // BMI
+			{
+				m_Recompiler.PerformBmi( instruction.GetJumpLabelName() );
+			}
+			break;
+			case 0x10: // BPL
+			{
+				m_Recompiler.PerformBpl( instruction.GetJumpLabelName() );
+			}
+			break;
+			case 0x50: // BVC
+			{
+				m_Recompiler.PerformBvc( instruction.GetJumpLabelName() );
+			}
+			break;
+			case 0x70: // BVS
+			{
+				m_Recompiler.PerformBvs( instruction.GetJumpLabelName() );
+			}
+			break;
 			}
 		}
 
@@ -472,13 +507,147 @@ void Recompiler::PerformRep( llvm::Value* value )
 	m_IRBuilder.CreateStore( result, &m_registerP );
 }
 
-void Recompiler::PerformBcc( const std::string& labelName )
+void Recompiler::PerformBvc( const std::string& labelName )
 {
-	// TODO do test of c flag from prcoessor status register.
+	auto result = m_IRBuilder.CreateAnd( &m_registerP, 0x40, "" );
+
+	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, true ) ) );
 	auto search = m_LabelNamesToBasicBlocks.find( labelName );
 	if ( search != m_LabelNamesToBasicBlocks.end() )
 	{
-		m_IRBuilder.CreateBr( search->second );
+		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		if ( m_CurrentBasicBlock )
+		{
+			elseBlock->moveAfter( m_CurrentBasicBlock );
+		}
+		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
+		SelectBlock( elseBlock );
+	}
+}
+
+void Recompiler::PerformBvs( const std::string& labelName )
+{
+	auto result = m_IRBuilder.CreateAnd( &m_registerP, 0x40, "" );
+
+	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, true ) ) );
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		if ( m_CurrentBasicBlock )
+		{
+			elseBlock->moveAfter( m_CurrentBasicBlock );
+		}
+		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
+		SelectBlock( elseBlock );
+	}
+}
+
+void Recompiler::PerformBpl( const std::string& labelName )
+{
+	auto result = m_IRBuilder.CreateAnd( &m_registerP, 0x80, "" );
+
+	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, true ) ) );
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		if ( m_CurrentBasicBlock )
+		{
+			elseBlock->moveAfter( m_CurrentBasicBlock );
+		}
+		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
+		SelectBlock( elseBlock );
+	}
+}
+
+void Recompiler::PerformBmi( const std::string& labelName )
+{
+	auto result = m_IRBuilder.CreateAnd( &m_registerP, 0x80, "" );
+
+	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, true ) ) );
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		if ( m_CurrentBasicBlock )
+		{
+			elseBlock->moveAfter( m_CurrentBasicBlock );
+		}
+		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
+		SelectBlock( elseBlock );
+	}
+}
+
+void Recompiler::PerformBne( const std::string& labelName )
+{
+	auto result = m_IRBuilder.CreateAnd( &m_registerP, 0x2, "" );
+
+	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ) );
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		if ( m_CurrentBasicBlock )
+		{
+			elseBlock->moveAfter( m_CurrentBasicBlock );
+		}
+		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
+		SelectBlock( elseBlock );
+	}
+}
+
+void Recompiler::PerformBeq( const std::string& labelName )
+{
+	auto result = m_IRBuilder.CreateAnd( &m_registerP, 0x2, "" );
+
+	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ) );
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		if ( m_CurrentBasicBlock )
+		{
+			elseBlock->moveAfter( m_CurrentBasicBlock );
+		}
+		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
+		SelectBlock( elseBlock );
+	}
+}
+
+void Recompiler::PerformBcs( const std::string& labelName )
+{
+	auto result = m_IRBuilder.CreateAnd( &m_registerP, 0x1, "" );
+
+	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ) );
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		if ( m_CurrentBasicBlock )
+		{
+			elseBlock->moveAfter( m_CurrentBasicBlock );
+		}
+		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
+		SelectBlock( elseBlock );
+	}
+}
+
+void Recompiler::PerformBcc( const std::string& labelName )
+{
+	auto result = m_IRBuilder.CreateAnd( &m_registerP, 0x1, "" );
+
+	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ) );
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		if ( m_CurrentBasicBlock )
+		{
+			elseBlock->moveAfter( m_CurrentBasicBlock );
+		}
+		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
+		SelectBlock( elseBlock );
 	}
 }
 
@@ -530,9 +699,10 @@ void Recompiler::PerformRti()
 	auto pc = PullWordFromStack();
 	auto pb = PullByteFromStack();
 
-	// TODO - need to set processor status register here.
+	m_IRBuilder.CreateStore( p, &m_registerP );
 	m_IRBuilder.CreateStore( pc, &m_registerPC );
 	m_IRBuilder.CreateStore( pb, &m_registerPB );
+	m_CurrentBasicBlock = nullptr;
 }
 
 void Recompiler::PerformRtl()
@@ -744,7 +914,7 @@ void Recompiler::TestAndSetCarrySubtraction( llvm::Value* lValue, llvm::Value* r
 
 void Recompiler::PerformLdy16( llvm::Value* value )
 {
-	m_IRBuilder.CreateStore( value, &m_registerX );
+	m_IRBuilder.CreateStore( value, &m_registerY );
 	TestAndSetZero16( value );
 	TestAndSetNegative16( value );
 }

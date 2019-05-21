@@ -60,6 +60,13 @@ public:
 	void PerformJsr( const std::string& labelName );
 	void PerformJsl( const std::string& labelName );
 	void PerformBcc( const std::string& labelName );
+	void PerformBcs( const std::string& labelName );
+	void PerformBeq( const std::string& labelName );
+	void PerformBne( const std::string& labelName );
+	void PerformBmi( const std::string& labelName );
+	void PerformBpl( const std::string& labelName );
+	void PerformBvc( const std::string& labelName );
+	void PerformBvs( const std::string& labelName );
 	void PerformSep( llvm::Value* value );
 	void PerformRep( llvm::Value* value );
 	llvm::Value* PullByteFromStack();
