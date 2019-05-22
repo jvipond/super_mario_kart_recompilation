@@ -142,6 +142,10 @@ private:
 	llvm::Module m_RecompilationModule;
 
 	std::string m_RomResetLabelName;
+	std::string m_RomNmiLabelName;
+	std::string m_RomIrqLabelName;
+	llvm::BasicBlock* m_NmiBasicBlock;
+	llvm::BasicBlock* m_IrqBasicBlock;
 	std::vector< std::variant<Label, Instruction> > m_Program;
 	std::map< std::string, uint32_t > m_LabelNamesToOffsets;
 	std::map< uint32_t, std::string > m_OffsetsToLabelNames;

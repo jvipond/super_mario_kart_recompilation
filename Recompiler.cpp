@@ -12,6 +12,8 @@
 Recompiler::Recompiler()
 : m_IRBuilder( m_LLVMContext )
 , m_RecompilationModule( "recompilation", m_LLVMContext )
+, m_NmiBasicBlock( nullptr )
+, m_IrqBasicBlock( nullptr )
 , m_DynamicJumpTableBlock( nullptr )
 , m_MainFunction( nullptr )
 , m_registerA( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "A" )
@@ -1005,6 +1007,8 @@ void Recompiler::LoadAST( const char* filename )
 
 		std::vector<nlohmann::json> ast;
 		j[ "rom_reset_label_name" ].get_to( m_RomResetLabelName );
+		j[ "rom_nmi_label_name" ].get_to( m_RomNmiLabelName );
+		j[ "rom_irq_label_name" ].get_to( m_RomIrqLabelName );
 		j[ "ast" ].get_to( ast );
 
 		for ( auto&& node : ast )
