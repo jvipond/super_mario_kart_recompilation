@@ -12,8 +12,6 @@
 Recompiler::Recompiler()
 : m_IRBuilder( m_LLVMContext )
 , m_RecompilationModule( "recompilation", m_LLVMContext )
-, m_NmiBasicBlock( nullptr )
-, m_IrqBasicBlock( nullptr )
 , m_DynamicJumpTableBlock( nullptr )
 , m_MainFunction( nullptr )
 , m_registerA( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "A" )
@@ -428,8 +426,8 @@ void Recompiler::Recompile()
 	llvm::InitializeNativeTarget();
 
 	// Create a main function and add an entry block:
-	llvm::FunctionType* mainFunctionType = llvm::FunctionType::get( llvm::Type::getInt32Ty( m_LLVMContext ), false );
-	m_MainFunction = llvm::Function::Create( mainFunctionType, llvm::Function::PrivateLinkage, "main", m_RecompilationModule );
+	llvm::FunctionType* mainFunctionType = llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext ), false );
+	m_MainFunction = llvm::Function::Create( mainFunctionType, llvm::Function::PrivateLinkage, "start", m_RecompilationModule );
 	llvm::BasicBlock* entry = llvm::BasicBlock::Create( m_LLVMContext, "EntryBlock", m_MainFunction );
 	m_IRBuilder.SetInsertPoint( entry );
 
@@ -437,15 +435,19 @@ void Recompiler::Recompile()
 	AddDynamicJumpTableBlock();
 	GenerateCode();
 
-	m_IRBuilder.SetInsertPoint( entry, entry->begin() );
-	CreateBranch( m_LabelNamesToBasicBlocks[ m_RomResetLabelName ] );
+	SelectBlock( entry );
+	auto badInterruptBlock = llvm::BasicBlock::Create( m_LLVMContext, "BadInterruptBlock", m_MainFunction );
+	auto sw = m_IRBuilder.CreateSwitch( m_MainFunction->arg_begin(), badInterruptBlock, 3 );
+	SelectBlock( badInterruptBlock );
+	m_IRBuilder.CreateRetVoid();
+	sw->addCase( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 1, true ) ), m_LabelNamesToBasicBlocks[ m_RomResetLabelName ] );
+	sw->addCase( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 2, true ) ), m_LabelNamesToBasicBlocks[ m_RomNmiLabelName ] );
+	sw->addCase( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 3, true ) ), m_LabelNamesToBasicBlocks[ m_RomIrqLabelName ] );
 
-	m_IRBuilder.SetInsertPoint( m_DynamicJumpTableBlock );
-	// Add return value of 0:
-	llvm::Value* returnValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0, true ) );
-	m_IRBuilder.CreateRet( returnValue );
+	AddEnterNmiInterruptCode();
 
-	
+	SelectBlock( entry );
+	m_IRBuilder.CreateRetVoid();
 	llvm::verifyModule( m_RecompilationModule, &llvm::errs() );
 
 	std::error_code EC;
@@ -455,6 +457,14 @@ void Recompiler::Recompile()
 	llvm::raw_fd_ostream outputStream( "smk.bc", EC );
 	llvm::WriteBitcodeToFile( m_RecompilationModule, outputStream );
 	outputStream.flush();
+}
+
+void Recompiler::AddEnterNmiInterruptCode( void )
+{
+	m_IRBuilder.SetInsertPoint( &( *m_LabelNamesToBasicBlocks[ m_RomNmiLabelName ]->getFirstInsertionPt() ) );
+	PushByteToStack( &m_registerP );
+	PushWordToStack( &m_registerPC );
+	PushByteToStack( &m_registerPB );
 }
 
 llvm::BasicBlock* Recompiler::CreateIf( llvm::Value* cond )
@@ -704,6 +714,7 @@ void Recompiler::PerformRti()
 	m_IRBuilder.CreateStore( p, &m_registerP );
 	m_IRBuilder.CreateStore( pc, &m_registerPC );
 	m_IRBuilder.CreateStore( pb, &m_registerPB );
+	m_IRBuilder.CreateRetVoid();
 	m_CurrentBasicBlock = nullptr;
 }
 
