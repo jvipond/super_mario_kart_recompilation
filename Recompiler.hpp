@@ -32,7 +32,12 @@ public:
 	llvm::BasicBlock* CreateIf( llvm::Value* cond );
 	void CreateBranch( llvm::BasicBlock* basicBlock );
 	void SetInsertPoint( llvm::BasicBlock* basicBlock );
-	void PerformOra( llvm::Value* value );
+	void PerformOra16( llvm::Value* value );
+	void PerformOra8( llvm::Value* value );
+	void PerformAnd16( llvm::Value* value );
+	void PerformAnd8( llvm::Value* value );
+	void PerformEor16( llvm::Value* value );
+	void PerformEor8( llvm::Value* value );
 	void PerformLda16( llvm::Value* value );
 	void PerformLda8( llvm::Value* value );
 	void PerformLdx16( llvm::Value* value );
@@ -69,6 +74,13 @@ public:
 	void PerformBvs( const std::string& labelName );
 	void PerformSep( llvm::Value* value );
 	void PerformRep( llvm::Value* value );
+	void PerformPhb( void );
+	void PerformPhd( void );
+	void PerformPhk( void );
+	void PerformPhp( void );
+	void PerformPlb( void );
+	void PerformPld( void );
+	void PerformPlp( void );
 	llvm::Value* PullByteFromStack();
 	llvm::Value* PullWordFromStack();
 	void PushByteToStack( llvm::Value* value );

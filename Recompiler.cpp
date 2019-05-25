@@ -102,6 +102,8 @@ void Recompiler::AddDynamicJumpTableBlock()
 	auto pb32Shifted = m_IRBuilder.CreateShl( pb32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 24 ), false ) ), "" );
 	auto finalPC = m_IRBuilder.CreateOr( pc32, pb32Shifted, "" );
 	auto sw = m_IRBuilder.CreateSwitch( finalPC, dynamicJumpTableDefaultCaseBlock, static_cast<unsigned int>( m_LabelNamesToOffsets.size() ) );
+	SelectBlock( dynamicJumpTableDefaultCaseBlock );
+	m_IRBuilder.CreateRetVoid();
 	for ( auto&& entry : m_LabelNamesToOffsets )
 	{
 		auto addressValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( entry.second ), false ) );
@@ -110,6 +112,7 @@ void Recompiler::AddDynamicJumpTableBlock()
 			sw->addCase( addressValue, m_LabelNamesToBasicBlocks[ entry.first ] );
 		}
 	}
+	SelectBlock( nullptr );
 }
 
 void Recompiler::GenerateCode()
@@ -154,12 +157,46 @@ void Recompiler::GenerateCode()
 				break;
 			case 0x07:
 				break;
-			case 0x08:
-				break;
 			case 0x09: // ORA immediate
 			{
-				llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-				m_Recompiler.PerformOra( operandValue );
+				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformOra16( operandValue );
+				}
+				else
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformOra8( operandValue );
+				}
+			}
+			break;
+			case 0x29: // AND immediate
+			{
+				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformAnd16( operandValue );
+				}
+				else
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformAnd8( operandValue );
+				}
+			}
+			break;
+			case 0x49: // EOR immediate
+			{
+				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformEor16( operandValue );
+				}
+				else
+				{
+					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformEor8( operandValue );
+				}
 			}
 			break;
 			case 0xA9: // LDA immediate
@@ -404,6 +441,41 @@ void Recompiler::GenerateCode()
 			case 0x70: // BVS
 			{
 				m_Recompiler.PerformBvs( instruction.GetJumpLabelName() );
+			}
+			break;
+			case 0x8B: // PHB
+			{
+				m_Recompiler.PerformPhb();
+			}
+			break;
+			case 0x0B: // PHD
+			{
+				m_Recompiler.PerformPhd();
+			}
+			break;
+			case 0x4B: // PHK
+			{
+				m_Recompiler.PerformPhk();
+			}
+			break;
+			case 0x08: // PHP
+			{
+				m_Recompiler.PerformPhp();
+			}
+			break;
+			case 0xAB: // PLB
+			{
+				m_Recompiler.PerformPlb();
+			}
+			break;
+			case 0x2B: // PLD
+			{
+				m_Recompiler.PerformPld();
+			}
+			break;
+			case 0x28: // PLP
+			{
+				m_Recompiler.PerformPlp();
 			}
 			break;
 			}
@@ -759,6 +831,45 @@ llvm::Value* Recompiler::PullWordFromStack()
 	return m_IRBuilder.CreateOr( word, low16, "" );
 }
 
+void Recompiler::PerformPhb( void )
+{
+	PushByteToStack( &m_registerDB );
+}
+
+void Recompiler::PerformPhd( void )
+{
+	PushWordToStack( &m_registerDP );
+}
+
+void Recompiler::PerformPhk( void )
+{
+	PushByteToStack( &m_registerPB );
+}
+
+void Recompiler::PerformPhp( void )
+{
+	PushByteToStack( &m_registerP );
+}
+
+void Recompiler::PerformPlb( void )
+{
+	m_IRBuilder.CreateStore( PullByteFromStack(), &m_registerPB );
+	TestAndSetZero8( &m_registerDP );
+	TestAndSetNegative8( &m_registerDP );
+}
+
+void Recompiler::PerformPld( void )
+{
+	m_IRBuilder.CreateStore( PullWordFromStack(), &m_registerDP );
+	TestAndSetZero16( &m_registerDP );
+	TestAndSetNegative16( &m_registerDP );
+}
+
+void Recompiler::PerformPlp( void )
+{
+	m_IRBuilder.CreateStore( PullByteFromStack(), &m_registerP );
+}
+
 void Recompiler::PushByteToStack( llvm::Value* value )
 {
 	// write the value to the address at current stack pointer
@@ -970,13 +1081,58 @@ void Recompiler::PerformLda8( llvm::Value* value )
 	TestAndSetNegative8( writeRegisterA8Bit );
 }
 
-void Recompiler::PerformOra( llvm::Value* value )
+void Recompiler::PerformOra16( llvm::Value* value )
 {
 	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
 	llvm::Value* newA = m_IRBuilder.CreateOr( loadA, value, "" );
 	m_IRBuilder.CreateStore( newA, &m_registerA );
 	TestAndSetZero16( newA );
 	TestAndSetNegative16( newA );
+}
+
+void Recompiler::PerformOra8( llvm::Value* value )
+{
+	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	llvm::Value* newA = m_IRBuilder.CreateOr( loadA, value, "" );
+	m_IRBuilder.CreateStore( newA, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	TestAndSetZero8( newA );
+	TestAndSetNegative8( newA );
+}
+
+void Recompiler::PerformAnd16( llvm::Value* value )
+{
+	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
+	llvm::Value* newA = m_IRBuilder.CreateAnd( loadA, value, "" );
+	m_IRBuilder.CreateStore( newA, &m_registerA );
+	TestAndSetZero16( newA );
+	TestAndSetNegative16( newA );
+}
+
+void Recompiler::PerformAnd8( llvm::Value* value )
+{
+	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	llvm::Value* newA = m_IRBuilder.CreateAnd( loadA, value, "" );
+	m_IRBuilder.CreateStore( newA, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	TestAndSetZero8( newA );
+	TestAndSetNegative8( newA );
+}
+
+void Recompiler::PerformEor16( llvm::Value* value )
+{
+	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
+	llvm::Value* newA = m_IRBuilder.CreateXor( loadA, value, "" );
+	m_IRBuilder.CreateStore( newA, &m_registerA );
+	TestAndSetZero16( newA );
+	TestAndSetNegative16( newA );
+}
+
+void Recompiler::PerformEor8( llvm::Value* value )
+{
+	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	llvm::Value* newA = m_IRBuilder.CreateXor( loadA, value, "" );
+	m_IRBuilder.CreateStore( newA, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	TestAndSetZero8( newA );
+	TestAndSetNegative8( newA );
 }
 
 void Recompiler::TestAndSetZero16( llvm::Value* value )
