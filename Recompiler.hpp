@@ -99,6 +99,12 @@ public:
 	void PerformDey( void );
 	void PerformDey16Acc( void );
 	void PerformDey8Acc( void );
+	void PerformAsl( void );
+	void PerformAsl16Acc( void );
+	void PerformAsl8Acc( void );
+	void PerformLsr( void );
+	void PerformLsr16Acc( void );
+	void PerformLsr8Acc( void );
 	llvm::Value* PullByteFromStack();
 	llvm::Value* PullWordFromStack();
 	void PushByteToStack( llvm::Value* value );
