@@ -105,6 +105,12 @@ public:
 	void PerformLsr( void );
 	void PerformLsr16Acc( void );
 	void PerformLsr8Acc( void );
+	void PerformRol( void );
+	void PerformRol16Acc( void );
+	void PerformRol8Acc( void );
+	void PerformRor( void );
+	void PerformRor16Acc( void );
+	void PerformRor8Acc( void );
 	llvm::Value* PullByteFromStack();
 	llvm::Value* PullWordFromStack();
 	void PushByteToStack( llvm::Value* value );
