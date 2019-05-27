@@ -34,6 +34,7 @@ Recompiler::Recompiler()
 , m_registerStatusZero( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "StatusZero" )
 , m_wRam( m_RecompilationModule, llvm::ArrayType::get( llvm::Type::getInt8Ty( m_LLVMContext ), WRAM_SIZE ), false, llvm::GlobalValue::ExternalLinkage, 0, "wRam" )
 , m_CurrentBasicBlock( nullptr )
+, m_CycleFunction( nullptr )
 {
 }
 
@@ -529,6 +530,8 @@ void Recompiler::GenerateCode()
 			}
 			break;
 			}
+
+			m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( 0 ), false ) ) );
 		}
 
 		Recompiler& m_Recompiler;
@@ -546,6 +549,9 @@ void Recompiler::GenerateCode()
 void Recompiler::Recompile()
 {
 	llvm::InitializeNativeTarget();
+
+	// Add cycle function that will called every time an instruction is executed:
+	m_CycleFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext ), false ), llvm::Function::ExternalLinkage, "romCycle", m_RecompilationModule );
 
 	// Create a main function and add an entry block:
 	llvm::FunctionType* mainFunctionType = llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext ), false );
@@ -568,17 +574,11 @@ void Recompiler::Recompile()
 
 	AddEnterNmiInterruptCode();
 
-	SelectBlock( entry );
-	m_IRBuilder.CreateRetVoid();
 	llvm::verifyModule( m_RecompilationModule, &llvm::errs() );
 
 	std::error_code EC;
-	llvm::raw_fd_ostream outputHumanReadable( "smk.human_readable.bc", EC );
+	llvm::raw_fd_ostream outputHumanReadable( "smk.ll", EC );
 	m_RecompilationModule.print( outputHumanReadable, nullptr );
-
-	llvm::raw_fd_ostream outputStream( "smk.bc", EC );
-	llvm::WriteBitcodeToFile( m_RecompilationModule, outputStream );
-	outputStream.flush();
 }
 
 void Recompiler::AddEnterNmiInterruptCode( void )
@@ -626,6 +626,12 @@ void Recompiler::SelectBlock( llvm::BasicBlock* basicBlock )
 void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
 {
 	m_IRBuilder.SetInsertPoint( basicBlock );
+}
+
+void Recompiler::PerformRomCycle( llvm::Value* value )
+{
+	std::vector<llvm::Value*> params = { value };
+	m_IRBuilder.CreateCall( m_CycleFunction, params, "" );
 }
 
 void Recompiler::PerformSep( llvm::Value* value )

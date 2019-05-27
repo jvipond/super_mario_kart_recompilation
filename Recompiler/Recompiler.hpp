@@ -111,6 +111,7 @@ public:
 	void PerformRor( void );
 	void PerformRor16Acc( void );
 	void PerformRor8Acc( void );
+	void PerformRomCycle( llvm::Value* value );
 	llvm::Value* PullByteFromStack();
 	llvm::Value* PullWordFromStack();
 	void PushByteToStack( llvm::Value* value );
@@ -219,6 +220,7 @@ private:
 	llvm::GlobalVariable m_wRam;
 
 	llvm::BasicBlock* m_CurrentBasicBlock;
+	llvm::Function* m_CycleFunction;
 };
 
 #endif // RECOMPILER_HPP
