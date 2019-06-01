@@ -88,8 +88,8 @@ public:
 	llvm::Value* PerformDec16Acc( void );
 	llvm::Value* PerformDec8Acc( void );
 	void PerformInx( void );
-	void PerformInx16Acc( void );
-	void PerformInx8Acc( void );
+	llvm::Value* PerformInx16Acc( void );
+	llvm::Value* PerformInx8Acc( void );
 	void PerformDex( void );
 	llvm::Value* PerformDex16Acc( void );
 	llvm::Value* PerformDex8Acc( void );
@@ -97,14 +97,14 @@ public:
 	llvm::Value* PerformIny16Acc( void );
 	llvm::Value* PerformIny8Acc( void );
 	void PerformDey( void );
-	void PerformDey16Acc( void );
-	void PerformDey8Acc( void );
+	llvm::Value* PerformDey16Acc( void );
+	llvm::Value* PerformDey8Acc( void );
 	void PerformAsl( void );
-	void PerformAsl16Acc( void );
-	void PerformAsl8Acc( void );
+	llvm::Value* PerformAsl16Acc( void );
+	llvm::Value* PerformAsl8Acc( void );
 	void PerformLsr( void );
-	void PerformLsr16Acc( void );
-	void PerformLsr8Acc( void );
+	llvm::Value* PerformLsr16Acc( void );
+	llvm::Value* PerformLsr8Acc( void );
 	void PerformRol( void );
 	llvm::Value* PerformRol16Acc( void );
 	llvm::Value* PerformRol8Acc( void );
@@ -112,6 +112,7 @@ public:
 	llvm::Value* PerformRor16Acc( void );
 	llvm::Value* PerformRor8Acc( void );
 	void PerformRomCycle( llvm::Value* value );
+	void Panic( void );
 	llvm::Value* PullByteFromStack();
 	llvm::Value* PullWordFromStack();
 	void PushByteToStack( llvm::Value* value );
@@ -206,21 +207,14 @@ private:
 	llvm::GlobalVariable m_registerX;
 	llvm::GlobalVariable m_registerY;
 	llvm::GlobalVariable m_registerP;
-	llvm::GlobalVariable m_registerStatusBreak;
-	llvm::GlobalVariable m_registerStatusCarry;
-	llvm::GlobalVariable m_registerStatusDecimal;
-	llvm::GlobalVariable m_registerStatusInterrupt;
-	llvm::GlobalVariable m_registerStatusMemoryWidth;
-	llvm::GlobalVariable m_registerStatusNegative;
-	llvm::GlobalVariable m_registerStatusOverflow;
-	llvm::GlobalVariable m_registerStatusIndexWidth;
-	llvm::GlobalVariable m_registerStatusZero;
 
 	static const uint32_t WRAM_SIZE = 0x20000;
 	llvm::GlobalVariable m_wRam;
 
 	llvm::BasicBlock* m_CurrentBasicBlock;
 	llvm::Function* m_CycleFunction;
+	llvm::Function* m_PanicFunction;
+	llvm::BasicBlock* m_PanicBlock;
 };
 
 #endif // RECOMPILER_HPP

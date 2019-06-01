@@ -9,9 +9,12 @@ message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 set(CMAKE_CXX_STANDARD 17)
 
 set(recompiler_SOURCES Recompiler/main.cpp Recompiler/Recompiler.cpp Recompiler/Recompiler.hpp Recompiler/json.hpp)
-set(smk_SOURCES smk_main.cpp)
+set(smk_SOURCES smk_main.cpp gl3w/src/gl3w.c imgui/imgui.h imgui/imgui.cpp imgui/imgui_impl_sdl.h imgui/imgui_impl_sdl.cpp imgui/imgui_impl_opengl3.h imgui/imgui_impl_opengl3.cpp imgui/imgui_internal.h imgui/imgui_widgets.cpp imgui/imgui_draw.cpp imgui/imgui_demo.cpp)
 
-include_directories(${LLVM_INCLUDE_DIRS})
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/sdl2)
+find_package(SDL2 REQUIRED)
+
+include_directories(${LLVM_INCLUDE_DIRS} gl3w/include)
 add_definitions(${LLVM_DEFINITIONS})
 
 SET(GENERATED_OBJ ${CMAKE_CURRENT_BINARY_DIR}/smk.o)
@@ -24,18 +27,18 @@ SET_SOURCE_FILES_PROPERTIES(
 
 add_executable(smk ${smk_SOURCES} ${GENERATED_OBJ})
 add_executable(recompiler ${recompiler_SOURCES})
-add_custom_target(recompiler_run
-									COMMAND recompiler
-									WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-									COMMENT "run generated recompiler in ${CMAKE_CURRENT_BINARY_DIR}"
-									SOURCES ${recompiler_SOURCES} )
 									
-add_custom_target(llc_run
-									COMMAND llc -filetype=obj smk.ll
-									DEPENDS recompiler_run
+add_custom_command(OUTPUT smk.ll
+									COMMAND recompiler
+									DEPENDS ${recompiler_SOURCES}
 									WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-									COMMENT "run llc on smk.ll in ${CMAKE_CURRENT_BINARY_DIR}"
-									SOURCES ${recompiler_SOURCES} )									
+									COMMENT "run generated recompiler in ${CMAKE_CURRENT_BINARY_DIR}")		
+
+add_custom_command(OUTPUT smk.o
+									COMMAND llc -filetype=obj smk.ll -o smk.o
+									DEPENDS smk.ll
+									WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+									COMMENT "run llc on smk.ll in ${CMAKE_CURRENT_BINARY_DIR}")										
 
 # Find the libraries that correspond to the LLVM components
 # that we wish to use
@@ -44,4 +47,5 @@ llvm_map_components_to_libnames(llvm_libs BitWriter Core Support native)
 # Link against LLVM libraries
 target_link_libraries(recompiler ${llvm_libs})
 
-add_dependencies(smk llc_run)
+target_include_directories(smk PRIVATE ${SDL2_INCLUDE_DIRS})
+target_link_libraries(smk ${SDL2_LIBRARIES})
