@@ -25,12 +25,20 @@ SET_SOURCE_FILES_PROPERTIES(
   GENERATED true
 )
 
+SET(GENERATED_JSON ${CMAKE_CURRENT_BINARY_DIR}/super_mario_kart_ast.json)
+SET_SOURCE_FILES_PROPERTIES(
+  ${GENERATED_JSON}
+  PROPERTIES
+  EXTERNAL_OBJECT true
+  GENERATED true
+)
+
 add_executable(smk ${smk_SOURCES} ${GENERATED_OBJ})
 add_executable(recompiler ${recompiler_SOURCES})
 									
 add_custom_command(OUTPUT smk.ll
 									COMMAND recompiler
-									DEPENDS ${recompiler_SOURCES}
+									DEPENDS ${recompiler_SOURCES} ${GENERATED_JSON}
 									WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 									COMMENT "run generated recompiler in ${CMAKE_CURRENT_BINARY_DIR}")		
 
@@ -48,4 +56,4 @@ llvm_map_components_to_libnames(llvm_libs BitWriter Core Support native)
 target_link_libraries(recompiler ${llvm_libs})
 
 target_include_directories(smk PRIVATE ${SDL2_INCLUDE_DIRS})
-target_link_libraries(smk ${SDL2_LIBRARIES})
+target_link_libraries(smk ${SDL2_LIBRARIES} ${CMAKE_DL_LIBS})
