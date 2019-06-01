@@ -43,7 +43,7 @@ add_custom_command(OUTPUT smk.ll
 									COMMENT "run generated recompiler in ${CMAKE_CURRENT_BINARY_DIR}")		
 
 add_custom_command(OUTPUT smk.o
-									COMMAND llc -filetype=obj smk.ll -o smk.o
+									COMMAND llc -filetype=obj -relocation-model=pic smk.ll -o smk.o
 									DEPENDS smk.ll
 									WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 									COMMENT "run llc on smk.ll in ${CMAKE_CURRENT_BINARY_DIR}")										
