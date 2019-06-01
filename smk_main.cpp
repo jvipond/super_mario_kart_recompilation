@@ -75,7 +75,10 @@ extern "C"
 				ImGui::Text( "PB = 0x%02hX", PB );
 				ImGui::Text( "PC = 0x%04hX", PC );
 				ImGui::Text( "SP = 0x%04hX", SP );
-				ImGui::Text( "P = 0x%02hX", P );
+
+				ImGui::Text( "P = %c%c%c%c%c%c%c%c", (P & (1 << 7)) ? 'N' : 'n', ( P & ( 1 << 6 ) ) ? 'V' : 'v', ( P & ( 1 << 5 ) ) ? 'M' : 'm',
+																						 ( P & ( 1 << 4 ) ) ? 'X' : 'x', ( P & ( 1 << 3 ) ) ? 'D' : 'd', ( P & ( 1 << 2 ) ) ? 'I' : 'i',
+																						 ( P & ( 1 << 1 ) ) ? 'Z' : 'z', ( P & ( 1 << 0 ) ) ? 'C' : 'c' );
 				if ( ImGui::Button( "Step" ) )
 				{
 					done = true;

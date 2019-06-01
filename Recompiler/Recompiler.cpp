@@ -12,6 +12,7 @@
 Recompiler::Recompiler()
 : m_IRBuilder( m_LLVMContext )
 , m_RecompilationModule( "recompilation", m_LLVMContext )
+, m_RomResetAddr( 0 )
 , m_DynamicJumpTableBlock( nullptr )
 , m_MainFunction( nullptr )
 , m_registerA( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "A" )
@@ -592,6 +593,7 @@ void Recompiler::Recompile()
 	GenerateCode();
 
 	SelectBlock( entry );
+	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, m_RomResetAddr, true ) ), &m_registerPC );
 	auto badInterruptBlock = llvm::BasicBlock::Create( m_LLVMContext, "BadInterruptBlock", m_MainFunction );
 	auto sw = m_IRBuilder.CreateSwitch( m_MainFunction->arg_begin(), badInterruptBlock, 3 );
 	SelectBlock( badInterruptBlock );
@@ -1548,8 +1550,6 @@ void Recompiler::PerformTcs()
 {
 	auto result = m_IRBuilder.CreateLoad( &m_registerA, "" );
 	m_IRBuilder.CreateStore( result, &m_registerSP );
-	TestAndSetZero16( result );
-	TestAndSetNegative16( result );
 }
 
 void Recompiler::PerformTcd()
@@ -1696,7 +1696,9 @@ void Recompiler::TestAndSetCarrySubtraction( llvm::Value* lValue, llvm::Value* r
 {
 	llvm::Value* isCarry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_UGE, lValue, rValue, "" );
 	auto zExtCarry = m_IRBuilder.CreateZExt( isCarry, llvm::Type::getInt8Ty( m_LLVMContext ) );
-	auto newP = m_IRBuilder.CreateOr( zExtCarry, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto complement = m_IRBuilder.CreateXor( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
+	auto unset = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto newP = m_IRBuilder.CreateOr( zExtCarry, unset );
 	m_IRBuilder.CreateStore( newP, &m_registerP );
 }
 
@@ -1711,8 +1713,8 @@ void Recompiler::PerformLdy8( llvm::Value* value )
 {
 	llvm::Value* writeRegisterY8Bit = m_IRBuilder.CreateBitCast( &m_registerY, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
 	m_IRBuilder.CreateStore( value, writeRegisterY8Bit );
-	TestAndSetZero8( writeRegisterY8Bit );
-	TestAndSetNegative8( writeRegisterY8Bit );
+	TestAndSetZero8( value );
+	TestAndSetNegative8( value );
 }
 
 void Recompiler::PerformLdx16( llvm::Value* value )
@@ -1726,8 +1728,8 @@ void Recompiler::PerformLdx8( llvm::Value* value )
 {
 	llvm::Value* writeRegisterX8Bit = m_IRBuilder.CreateBitCast( &m_registerX, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
 	m_IRBuilder.CreateStore( value, writeRegisterX8Bit );
-	TestAndSetZero8( writeRegisterX8Bit );
-	TestAndSetNegative8( writeRegisterX8Bit );
+	TestAndSetZero8( value );
+	TestAndSetNegative8( value );
 }
 
 void Recompiler::PerformLda16( llvm::Value* value )
@@ -1805,9 +1807,11 @@ void Recompiler::TestAndSetZero16( llvm::Value* value )
 	llvm::Value* isZero = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, value, zeroConst, "" );
 	auto zExtIsZero = m_IRBuilder.CreateZExt( isZero, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto shiftedIsZero = m_IRBuilder.CreateShl( zExtIsZero, 1 );
-	auto masked = m_IRBuilder.CreateOr( shiftedIsZero, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto complement = m_IRBuilder.CreateXor( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
+	auto unset = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto newP = m_IRBuilder.CreateOr( shiftedIsZero, unset );
 
-	m_IRBuilder.CreateStore( masked, &m_registerP );
+	m_IRBuilder.CreateStore( newP, &m_registerP );
 }
 
 void Recompiler::TestAndSetZero8( llvm::Value* value )
@@ -1816,20 +1820,23 @@ void Recompiler::TestAndSetZero8( llvm::Value* value )
 	llvm::Value* isZero = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, value, zeroConst, "" );
 	auto zExtIsZero = m_IRBuilder.CreateZExt( isZero, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto shiftedIsZero = m_IRBuilder.CreateShl( zExtIsZero, 1 );
-	auto masked = m_IRBuilder.CreateOr( shiftedIsZero, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto complement = m_IRBuilder.CreateXor( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
+	auto unset = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto newP = m_IRBuilder.CreateOr( shiftedIsZero, unset );
 
-	m_IRBuilder.CreateStore( masked, &m_registerP );
+	m_IRBuilder.CreateStore( newP, &m_registerP );
 }
 
 void Recompiler::TestAndSetNegative16( llvm::Value* value )
 {
 	llvm::Value* x8000 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x8000, false ) );
 	llvm::Value* masked = m_IRBuilder.CreateAnd( value, x8000, "" );
-	llvm::Value* isNeg = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x8000, "" );
-
-	auto zExtIsNeg = m_IRBuilder.CreateZExt( isNeg, llvm::Type::getInt8Ty( m_LLVMContext ) );
-	auto shiftedIsNeg = m_IRBuilder.CreateShl( zExtIsNeg, 7 );
-	auto newP = m_IRBuilder.CreateOr( shiftedIsNeg, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto isNeg = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x8000, "" );
+	auto zExtisNeg = m_IRBuilder.CreateZExt( isNeg, llvm::Type::getInt8Ty( m_LLVMContext ) );
+	auto zExtisNegShifted = m_IRBuilder.CreateShl( zExtisNeg, 7 );
+	auto complement = m_IRBuilder.CreateXor( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, false ) ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
+	auto unset = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto newP = m_IRBuilder.CreateOr( zExtisNegShifted, unset );
 
 	m_IRBuilder.CreateStore( newP, &m_registerP );
 }
@@ -1838,11 +1845,10 @@ void Recompiler::TestAndSetNegative8( llvm::Value* value )
 {
 	llvm::Value* x80 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, false ) );
 	llvm::Value* masked = m_IRBuilder.CreateAnd( value, x80, "" );
-	llvm::Value* isNeg = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x80, "" );
 
-	auto zExtIsNeg = m_IRBuilder.CreateZExt( isNeg, llvm::Type::getInt8Ty( m_LLVMContext ) );
-	auto shiftedIsNeg = m_IRBuilder.CreateShl( zExtIsNeg, 7 );
-	auto newP = m_IRBuilder.CreateOr( shiftedIsNeg, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto complement = m_IRBuilder.CreateXor( x80, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
+	auto unset = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto newP = m_IRBuilder.CreateOr( masked, unset );
 
 	m_IRBuilder.CreateStore( newP, &m_registerP );
 }
@@ -1856,6 +1862,7 @@ void Recompiler::LoadAST( const char* filename )
 
 		std::vector<nlohmann::json> ast;
 		j[ "rom_reset_label_name" ].get_to( m_RomResetLabelName );
+		j[ "rom_reset_addr" ].get_to( m_RomResetAddr );
 		j[ "rom_nmi_label_name" ].get_to( m_RomNmiLabelName );
 		j[ "rom_irq_label_name" ].get_to( m_RomIrqLabelName );
 		j[ "ast" ].get_to( ast );

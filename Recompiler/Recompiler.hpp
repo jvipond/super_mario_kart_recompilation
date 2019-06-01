@@ -187,6 +187,7 @@ private:
 	llvm::Module m_RecompilationModule;
 
 	std::string m_RomResetLabelName;
+	uint32_t m_RomResetAddr;
 	std::string m_RomNmiLabelName;
 	std::string m_RomIrqLabelName;
 	std::vector< std::variant<Label, Instruction> > m_Program;
