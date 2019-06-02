@@ -70,9 +70,9 @@ extern "C"
 				ImGui::Text( "A = 0x%04hX", A );
 				ImGui::Text( "X = 0x%04hX", X );
 				ImGui::Text( "Y = 0x%04hX", Y );
-				ImGui::Text( "DB = 0x%02hX", DB );
+				ImGui::Text( "DB = 0x%02hhX", DB );
 				ImGui::Text( "DP = 0x%04hX", DP );
-				ImGui::Text( "PB = 0x%02hX", PB );
+				ImGui::Text( "PB = 0x%02hhX", PB );
 				ImGui::Text( "PC = 0x%04hX", PC );
 				ImGui::Text( "SP = 0x%04hX", SP );
 

@@ -377,9 +377,13 @@ void Recompiler::GenerateCode()
 			}
 			break;
 			case 0x4C: // JMP abs
+			{
+				m_Recompiler.PerformJmpAbs( instruction.GetJumpLabelName(), instruction.GetOperand() );
+			}
+			break;
 			case 0x5C: // JMP long
 			{		
-				m_Recompiler.PerformJmp( instruction.GetJumpLabelName() );
+				m_Recompiler.PerformJmpLng( instruction.GetJumpLabelName(), instruction.GetOperand() );
 			}
 			break;
 			case 0xF4: // PEA
@@ -405,12 +409,12 @@ void Recompiler::GenerateCode()
 			break;
 			case 0x20: // JSR absolute
 			{
-				m_Recompiler.PerformJsr( instruction.GetJumpLabelName() );
+				m_Recompiler.PerformJsr( instruction.GetJumpLabelName(), instruction.GetOperand() );
 			}
 			break;
 			case 0x22: // JSL long
 			{
-				m_Recompiler.PerformJsl( instruction.GetJumpLabelName() );
+				m_Recompiler.PerformJsl( instruction.GetJumpLabelName(), instruction.GetOperand() );
 			}
 			break;
 			case 0x90: // BCC
@@ -866,8 +870,13 @@ void Recompiler::PerformBcc( const std::string& labelName )
 	}
 }
 
-void Recompiler::PerformJsl( const std::string& labelName )
+void Recompiler::PerformJsl( const std::string& labelName, const uint32_t jumpAddress )
 {
+	const uint16_t pc = jumpAddress & 0x0000ffff;
+	const uint8_t pb = ( jumpAddress & 0x00ff0000 ) >> 16;
+	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( pc ), false ) ), &m_registerPC );
+	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( pb ), false ) ), &m_registerPB );
+
 	PushByteToStack( m_IRBuilder.CreateLoad( &m_registerPB, "" ) );
 	auto pcPlus3 = m_IRBuilder.CreateAdd( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 3, false ) ), "" );
 	PushWordToStack( pcPlus3 );
@@ -885,8 +894,11 @@ void Recompiler::PerformJsl( const std::string& labelName )
 	m_CurrentBasicBlock = nullptr;
 }
 
-void Recompiler::PerformJsr( const std::string& labelName )
+void Recompiler::PerformJsr( const std::string& labelName, const uint32_t jumpAddress )
 {
+	const uint16_t pc = jumpAddress & 0x0000ffff;
+	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( pc ), false ) ), &m_registerPC );
+
 	auto pcPlus2 = m_IRBuilder.CreateAdd( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 2, false ) ), "" );
 	PushWordToStack( pcPlus2  );
 	auto search = m_LabelNamesToBasicBlocks.find( labelName );
@@ -903,8 +915,31 @@ void Recompiler::PerformJsr( const std::string& labelName )
 	m_CurrentBasicBlock = nullptr;
 }
 
-void Recompiler::PerformJmp( const std::string& labelName )
+void Recompiler::PerformJmpAbs( const std::string& labelName, const uint32_t jumpAddress )
 {
+	const uint16_t pc = jumpAddress & 0x0000ffff;
+	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( pc ), false ) ), &m_registerPC );
+
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+		m_IRBuilder.CreateBr( search->second );
+		m_CurrentBasicBlock = nullptr;
+	}
+	else
+	{
+		m_IRBuilder.CreateBr( m_PanicBlock );
+	}
+}
+
+void Recompiler::PerformJmpLng( const std::string& labelName, const uint32_t jumpAddress )
+{
+	const uint16_t pc = jumpAddress & 0x0000ffff;
+	const uint8_t pb = (jumpAddress & 0x00ff0000) >> 16;
+	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( pc ), false ) ), &m_registerPC );
+	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( pb ), false ) ), &m_registerPB );
+
 	auto search = m_LabelNamesToBasicBlocks.find( labelName );
 	if ( search != m_LabelNamesToBasicBlocks.end() )
 	{
@@ -920,7 +955,17 @@ void Recompiler::PerformJmp( const std::string& labelName )
 
 void Recompiler::PerformBra( const std::string& labelName )
 {
-	PerformJmp( labelName );
+	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	if ( search != m_LabelNamesToBasicBlocks.end() )
+	{
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+		m_IRBuilder.CreateBr( search->second );
+		m_CurrentBasicBlock = nullptr;
+	}
+	else
+	{
+		m_IRBuilder.CreateBr( m_PanicBlock );
+	}
 	m_CurrentBasicBlock = nullptr;
 }
 

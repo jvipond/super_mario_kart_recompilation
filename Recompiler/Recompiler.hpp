@@ -61,9 +61,10 @@ public:
 	void PerformRti();
 	void PerformPea( llvm::Value* value );
 	void PerformBra( const std::string& labelName );
-	void PerformJmp( const std::string& labelName );
-	void PerformJsr( const std::string& labelName );
-	void PerformJsl( const std::string& labelName );
+	void PerformJmpAbs( const std::string& labelName, const uint32_t jumpAddress );
+	void PerformJmpLng( const std::string& labelName, const uint32_t jumpAddress );
+	void PerformJsr( const std::string& labelName, const uint32_t jumpAddress );
+	void PerformJsl( const std::string& labelName, const uint32_t jumpAddress );
 	void PerformBcc( const std::string& labelName );
 	void PerformBcs( const std::string& labelName );
 	void PerformBeq( const std::string& labelName );
