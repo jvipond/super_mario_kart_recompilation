@@ -112,6 +112,17 @@ public:
 	void PerformRor( void );
 	llvm::Value* PerformRor16Acc( void );
 	llvm::Value* PerformRor8Acc( void );
+	void PerformTax( void );
+	void PerformTay( void );
+	void PerformTsx( void );
+	void PerformTxa( void );
+	void PerformTxs( void );
+	void PerformTxy( void );
+	void PerformTya( void );
+	void PerformTyx( void );
+	void PerformRegisterTransfer( llvm::Value* sourceRegister, llvm::Value* destinationRegister );
+	llvm::Value* PerformRegisterTransfer16( llvm::Value* sourceRegister, llvm::Value* destinationRegister );
+	llvm::Value* PerformRegisterTransfer8( llvm::Value* sourceRegister, llvm::Value* destinationRegister );
 	void PerformRomCycle( llvm::Value* value );
 	void Panic( void );
 	llvm::Value* PullByteFromStack();

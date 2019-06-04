@@ -559,6 +559,46 @@ void Recompiler::GenerateCode()
 				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
 			}
 			break;
+			case 0xAA: // TAX
+			{
+				m_Recompiler.PerformTax();
+			}
+			break;
+			case 0xA8: // TAY
+			{
+				m_Recompiler.PerformTay();
+			}
+			break;
+			case 0xBA: // TSX
+			{
+				m_Recompiler.PerformTsx();
+			}
+			break;
+			case 0x8A: // TXA
+			{
+				m_Recompiler.PerformTxa();
+			}
+			break;
+			case 0x9A: // TXS
+			{
+				m_Recompiler.PerformTxs();
+			}
+			break;
+			case 0x9B: // TXY
+			{
+				m_Recompiler.PerformTxy();
+			}
+			break;
+			case 0x98: // TYA
+			{
+				m_Recompiler.PerformTya();
+			}
+			break;
+			case 0xBB: // TYX
+			{
+				m_Recompiler.PerformTyx();
+			}
+			break;
 			}
 		}
 
@@ -1560,6 +1600,89 @@ llvm::Value* Recompiler::PerformRor8Acc( void )
 	auto newA = m_IRBuilder.CreateTrunc( shifted, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	m_IRBuilder.CreateStore( newA, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ) ), "" );
 	return newA;
+}
+
+void Recompiler::PerformTax( void )
+{
+	PerformRegisterTransfer( &m_registerA, &m_registerX );
+}
+
+void Recompiler::PerformTay( void )
+{
+	PerformRegisterTransfer( &m_registerA, &m_registerY );
+}
+
+void Recompiler::PerformTsx( void )
+{
+	PerformRegisterTransfer( &m_registerSP, &m_registerX );
+}
+
+void Recompiler::PerformTxa( void )
+{
+	PerformRegisterTransfer( &m_registerX, &m_registerA );
+}
+
+void Recompiler::PerformTxs( void )
+{
+	PerformRegisterTransfer( &m_registerX, &m_registerSP );
+}
+
+void Recompiler::PerformTxy( void )
+{
+	PerformRegisterTransfer( &m_registerX, &m_registerY );
+}
+
+void Recompiler::PerformTya( void )
+{
+	PerformRegisterTransfer( &m_registerY, &m_registerA );
+}
+
+void Recompiler::PerformTyx( void )
+{
+	PerformRegisterTransfer( &m_registerY, &m_registerX );
+}
+
+void Recompiler::PerformRegisterTransfer( llvm::Value* sourceRegister, llvm::Value* destinationRegister )
+{
+	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
+	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
+	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	if ( m_CurrentBasicBlock )
+	{
+		thenBlock->moveAfter( m_CurrentBasicBlock );
+		elseBlock->moveAfter( thenBlock );
+		endBlock->moveAfter( elseBlock );
+	}
+	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
+	SelectBlock( thenBlock );
+	auto newValue16 = PerformRegisterTransfer16( sourceRegister, destinationRegister );
+	TestAndSetZero16( newValue16 );
+	TestAndSetNegative16( newValue16 );
+	m_IRBuilder.CreateBr( endBlock );
+
+	SelectBlock( elseBlock );
+	auto newValue8 = PerformRegisterTransfer8( sourceRegister, destinationRegister );
+	TestAndSetZero8( newValue8 );
+	TestAndSetNegative8( newValue8 );
+	m_IRBuilder.CreateBr( endBlock );
+
+	SelectBlock( endBlock );
+}
+
+llvm::Value* Recompiler::PerformRegisterTransfer16( llvm::Value* sourceRegister, llvm::Value* destinationRegister )
+{
+	auto newValue = m_IRBuilder.CreateLoad( sourceRegister, "" );
+	m_IRBuilder.CreateStore( newValue, destinationRegister );
+	return newValue;
+}
+
+llvm::Value* Recompiler::PerformRegisterTransfer8( llvm::Value* sourceRegister, llvm::Value* destinationRegister )
+{
+	auto newValue = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( sourceRegister, llvm::Type::getInt8PtrTy( m_LLVMContext ) ), "" );
+	m_IRBuilder.CreateStore( newValue, m_IRBuilder.CreateBitCast( destinationRegister, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
+	return newValue;
 }
 
 void Recompiler::PerformPlp( void )
