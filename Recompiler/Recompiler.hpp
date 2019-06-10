@@ -46,6 +46,10 @@ public:
 	void PerformLdy8( llvm::Value* value );
 	void PerformCmp16( llvm::Value* lValue, llvm::Value* rValue );
 	void PerformCmp8( llvm::Value* lValue, llvm::Value* rValue );
+	void PerformAdc16( llvm::Value* value );
+	void PerformAdc8( llvm::Value* value );
+	void PerformSbc16( llvm::Value* value );
+	void PerformSbc8( llvm::Value* value );
 	void TestAndSetZero16( llvm::Value* value );
 	void TestAndSetZero8( llvm::Value* value );
 	void TestAndSetNegative16( llvm::Value* value );
