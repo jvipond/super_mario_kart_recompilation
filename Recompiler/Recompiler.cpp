@@ -1930,8 +1930,9 @@ void Recompiler::PerformLdx8( llvm::Value* value )
 
 void Recompiler::PerformAdc16( llvm::Value* value )
 {
-	auto acc = m_IRBuilder.CreateLoad( &m_registerA, "" );
-	auto answer32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAdd( acc, value, "" ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto acc32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerA, "" ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto value32 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto answer32 = m_IRBuilder.CreateAdd( acc32, value32, "" );
 	auto carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::APInt( 8, static_cast<uint64_t>( 0x1 ), false ) ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	answer32 = m_IRBuilder.CreateAdd( answer32, carry );
 
@@ -1959,8 +1960,9 @@ void Recompiler::PerformAdc16( llvm::Value* value )
 
 void Recompiler::PerformAdc8( llvm::Value* value )
 {
-	auto acc = m_IRBuilder.CreateLoad( &m_registerA, "" );
-	auto answer16 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAdd( acc, m_IRBuilder.CreateZExt( value, llvm::Type::getInt16Ty( m_LLVMContext ) ), "" ), llvm::Type::getInt16Ty( m_LLVMContext ) );
+	auto acc16 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerA, "" ), llvm::Type::getInt16Ty( m_LLVMContext ) );
+	auto value16 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt16Ty( m_LLVMContext ) );
+	auto answer16 = m_IRBuilder.CreateAdd( acc16, value16, "" );
 	auto carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::APInt( 8, static_cast<uint64_t>( 0x1 ), false ) ), llvm::Type::getInt16Ty( m_LLVMContext ) );
 	answer16 = m_IRBuilder.CreateAdd( answer16, carry );
 
@@ -1988,12 +1990,64 @@ void Recompiler::PerformAdc8( llvm::Value* value )
 
 void Recompiler::PerformSbc16( llvm::Value* value )
 {
+	auto acc32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerA, "" ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto value32 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto answer32 = m_IRBuilder.CreateSub( acc32, value32, "" );
+	auto carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::APInt( 8, static_cast<uint64_t>( 0x1 ), false ) ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	answer32 = m_IRBuilder.CreateAdd( answer32, carry );
+	answer32 = m_IRBuilder.CreateSub( answer32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 1, true ) ) );
 
+	{
+		auto newCarry = m_IRBuilder.CreateICmpUGE( answer32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0, true ) ) );
+		auto zExtCarry = m_IRBuilder.CreateZExt( newCarry, llvm::Type::getInt8Ty( m_LLVMContext ) );
+		auto newP = m_IRBuilder.CreateOr( zExtCarry, m_IRBuilder.CreateLoad( &m_registerP, "" ), "" );
+		m_IRBuilder.CreateStore( newP, &m_registerP );
+	}
+
+	{
+		auto outsidePositiveRange = m_IRBuilder.CreateICmpSGT( answer32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 32767, true ) ) );
+		auto outsideNegativeRange = m_IRBuilder.CreateICmpSLT( answer32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, -32768, true ) ) );
+		auto newOverflow = m_IRBuilder.CreateOr( outsideNegativeRange, outsidePositiveRange, "" );
+		auto zExtOverflow = m_IRBuilder.CreateZExt( newOverflow, llvm::Type::getInt8Ty( m_LLVMContext ) );
+		auto newP = m_IRBuilder.CreateOr( zExtOverflow, m_IRBuilder.CreateLoad( &m_registerP, "" ), "" );
+		m_IRBuilder.CreateStore( newP, &m_registerP );
+	}
+
+	auto newAcc = m_IRBuilder.CreateTrunc( answer32, llvm::Type::getInt16Ty( m_LLVMContext ) );
+	m_IRBuilder.CreateStore( newAcc, &m_registerA );
+	TestAndSetZero16( newAcc );
+	TestAndSetNegative16( newAcc );
 }
 
 void Recompiler::PerformSbc8( llvm::Value* value )
 {
+	auto acc16 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerA, "" ), llvm::Type::getInt16Ty( m_LLVMContext ) );
+	auto value16 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt16Ty( m_LLVMContext ) );
+	auto answer16 = m_IRBuilder.CreateSub( acc16, value16, "" );
+	auto carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::APInt( 8, static_cast<uint64_t>( 0x1 ), false ) ), llvm::Type::getInt16Ty( m_LLVMContext ) );
+	answer16 = m_IRBuilder.CreateAdd( answer16, carry );
+	answer16 = m_IRBuilder.CreateSub( answer16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 1, true ) ) );
 
+	{
+		auto newCarry = m_IRBuilder.CreateICmpUGE( answer16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0, true ) ) );
+		auto zExtCarry = m_IRBuilder.CreateZExt( newCarry, llvm::Type::getInt8Ty( m_LLVMContext ) );
+		auto newP = m_IRBuilder.CreateOr( zExtCarry, m_IRBuilder.CreateLoad( &m_registerP, "" ), "" );
+		m_IRBuilder.CreateStore( newP, &m_registerP );
+	}
+
+	{
+		auto outsidePositiveRange = m_IRBuilder.CreateICmpSGT( answer16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 127, true ) ) );
+		auto outsideNegativeRange = m_IRBuilder.CreateICmpSLT( answer16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, -128, true ) ) );
+		auto newOverflow = m_IRBuilder.CreateOr( outsideNegativeRange, outsidePositiveRange, "" );
+		auto zExtOverflow = m_IRBuilder.CreateZExt( newOverflow, llvm::Type::getInt8Ty( m_LLVMContext ) );
+		auto newP = m_IRBuilder.CreateOr( zExtOverflow, m_IRBuilder.CreateLoad( &m_registerP, "" ), "" );
+		m_IRBuilder.CreateStore( newP, &m_registerP );
+	}
+
+	auto newAcc = m_IRBuilder.CreateTrunc( answer16, llvm::Type::getInt8Ty( m_LLVMContext ) );
+	m_IRBuilder.CreateStore( newAcc, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	TestAndSetZero8( newAcc );
+	TestAndSetNegative8( newAcc );
 }
 
 void Recompiler::PerformLda16( llvm::Value* value )
