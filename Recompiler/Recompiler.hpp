@@ -50,6 +50,8 @@ public:
 	void PerformAdc8( llvm::Value* value );
 	void PerformSbc16( llvm::Value* value );
 	void PerformSbc8( llvm::Value* value );
+	void PerformBit16( llvm::Value* value );
+	void PerformBit8( llvm::Value* value );
 	void TestAndSetZero16( llvm::Value* value );
 	void TestAndSetZero8( llvm::Value* value );
 	void TestAndSetNegative16( llvm::Value* value );

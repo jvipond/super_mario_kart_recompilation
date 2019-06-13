@@ -627,6 +627,18 @@ void Recompiler::GenerateCode()
 				}
 			}
 			break;
+			case 0x89: // BIT
+				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+				{
+					auto data = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformBit16( data );
+				}
+				else
+				{
+					auto data = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+					m_Recompiler.PerformBit8( data );
+				}
+				break;
 			}
 		}
 
@@ -2081,6 +2093,20 @@ void Recompiler::PerformOra8( llvm::Value* value )
 	m_IRBuilder.CreateStore( newA, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
 	TestAndSetZero8( newA );
 	TestAndSetNegative8( newA );
+}
+
+void Recompiler::PerformBit16( llvm::Value* value )
+{
+	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
+	llvm::Value* result = m_IRBuilder.CreateAnd( loadA, value, "" );
+	TestAndSetZero16( result );
+}
+
+void Recompiler::PerformBit8( llvm::Value* value )
+{
+	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	llvm::Value* result = m_IRBuilder.CreateAnd( loadA, value, "" );
+	TestAndSetZero8( result );
 }
 
 void Recompiler::PerformAnd16( llvm::Value* value )
