@@ -1,11 +1,13 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <cassert>
 #include "GL/gl3w.h"
 #include <SDL.h>
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_sdl.h"
 #include "imgui/imgui_impl_opengl3.h"
+#include "imgui/imgui_memory_editor.h"
 
 extern "C"
 {
@@ -19,7 +21,8 @@ extern "C"
 	int16_t Y = 0;
 	int8_t P = 0;
 
-	int8_t wRam[ 0x20000 ] = {0};
+	int8_t wRam[ 0x20000 ] = { 0 };
+	int8_t rom[ 0x80000 ] = { 0 };
 
 	void start( const int32_t interrupt );
 	SDL_Window* window = nullptr;
@@ -39,6 +42,7 @@ extern "C"
 		std::exit( EXIT_SUCCESS );
 	}
 
+	static MemoryEditor mem_edit;
 	void romCycle( const int32_t cycles )
 	{
 		ImGuiIO& io = ImGui::GetIO();
@@ -79,11 +83,24 @@ extern "C"
 				ImGui::Text( "P = %c%c%c%c%c%c%c%c", (P & (1 << 7)) ? 'N' : 'n', ( P & ( 1 << 6 ) ) ? 'V' : 'v', ( P & ( 1 << 5 ) ) ? 'M' : 'm',
 																						 ( P & ( 1 << 4 ) ) ? 'X' : 'x', ( P & ( 1 << 3 ) ) ? 'D' : 'd', ( P & ( 1 << 2 ) ) ? 'I' : 'i',
 																						 ( P & ( 1 << 1 ) ) ? 'Z' : 'z', ( P & ( 1 << 0 ) ) ? 'C' : 'c' );
+
 				if ( ImGui::Button( "Step" ) )
 				{
 					done = true;
 				}
 
+				ImGui::End();
+			}
+
+			{
+				ImGui::Begin( "wRam" );
+				mem_edit.DrawContents( wRam, sizeof( wRam ), static_cast<size_t>( 0x7E0000 ) );
+				ImGui::End();
+			}
+
+			{
+				ImGui::Begin( "rom" );
+				mem_edit.DrawContents( rom, sizeof( rom ) );
 				ImGui::End();
 			}
 
@@ -110,6 +127,25 @@ enum InterruptVector
 	INTERRUPT_VECTOR_NMI,
 	INTERRUPT_VECTOR_IRQ,
 };
+
+void LoadRom( const char* romPath )
+{
+	FILE * pFile = fopen( romPath, "rb" );
+	if ( pFile )
+	{
+		auto result = fread( rom, 1, sizeof( rom ), pFile );
+		assert( result == sizeof( rom ) );
+		if ( result < sizeof( rom ) )
+		{
+			std::exit( EXIT_FAILURE );
+		}
+	}
+	else
+	{
+		std::cout << "Can't load rom file " << romPath << std::endl;
+		std::exit( EXIT_FAILURE );
+	}
+}
 
 int main( int argc, char** argv ) 
 {	
@@ -148,6 +184,7 @@ int main( int argc, char** argv )
 	ImGui_ImplOpenGL3_Init( glsl_version );
 	SDL_GL_MakeCurrent( window, gl_context );
 
+	LoadRom( "Super Mario Kart (USA).sfc" );
 	start( INTERRUPT_VECTOR_ROM_RESET );
 
 	quit();

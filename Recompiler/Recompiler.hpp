@@ -230,6 +230,9 @@ private:
 	static const uint32_t WRAM_SIZE = 0x20000;
 	llvm::GlobalVariable m_wRam;
 
+	static const uint32_t ROM_SIZE = 0x80000;
+	llvm::GlobalVariable m_Rom;
+
 	llvm::BasicBlock* m_CurrentBasicBlock;
 	llvm::Function* m_CycleFunction;
 	llvm::Function* m_PanicFunction;

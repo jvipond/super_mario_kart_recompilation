@@ -25,6 +25,7 @@ Recompiler::Recompiler()
 , m_registerY( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "Y" )
 , m_registerP( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "P" )
 , m_wRam( m_RecompilationModule, llvm::ArrayType::get( llvm::Type::getInt8Ty( m_LLVMContext ), WRAM_SIZE ), false, llvm::GlobalValue::ExternalLinkage, 0, "wRam" )
+, m_Rom( m_RecompilationModule, llvm::ArrayType::get( llvm::Type::getInt8Ty( m_LLVMContext ), ROM_SIZE ), false, llvm::GlobalValue::ExternalLinkage, 0, "rom" )
 , m_CurrentBasicBlock( nullptr )
 , m_CycleFunction( nullptr )
 , m_PanicFunction( nullptr )
@@ -44,6 +45,7 @@ Recompiler::~Recompiler()
 	m_registerY.removeFromParent();
 	m_registerP.removeFromParent();
 	m_wRam.removeFromParent();
+	m_Rom.removeFromParent();
 }
 
 // Visit all the Label nodes and set up the basic blocks:
