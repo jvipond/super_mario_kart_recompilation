@@ -30,6 +30,8 @@ Recompiler::Recompiler()
 , m_CycleFunction( nullptr )
 , m_PanicFunction( nullptr )
 , m_PanicBlock( nullptr )
+, m_ConvertRuntimeAddressFunction( nullptr )
+, m_UpdateInstructionOutput( nullptr )
 {
 }
 
@@ -46,6 +48,31 @@ Recompiler::~Recompiler()
 	m_registerP.removeFromParent();
 	m_wRam.removeFromParent();
 	m_Rom.removeFromParent();
+}
+
+void Recompiler::AddInstructionStringGlobalVariables()
+{
+	struct AddInstructionStringGlobalVariablesVisitor
+	{
+		AddInstructionStringGlobalVariablesVisitor( Recompiler& recompiler ) : m_Recompiler( recompiler ) {}
+
+		void operator()( const Label& label )
+		{
+		}
+
+		void operator()( const Instruction& instruction )
+		{
+			m_Recompiler.AddOffsetToInstructionString( instruction.GetOffset(), instruction.GetInstructionString() );
+		}
+
+		Recompiler& m_Recompiler;
+	};
+
+	AddInstructionStringGlobalVariablesVisitor addInstructionStringGlobalVariablesVisitorVisitor( *this );
+	for ( auto&& n : m_Program )
+	{
+		std::visit( addInstructionStringGlobalVariablesVisitorVisitor, n );
+	}
 }
 
 // Visit all the Label nodes and set up the basic blocks:
@@ -87,9 +114,12 @@ void Recompiler::AddDynamicJumpTableBlock()
 
 	auto pc32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::Type::getInt32Ty( m_LLVMContext ), "" );
 	auto pb32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerPB, "" ), llvm::Type::getInt32Ty( m_LLVMContext ), "" );
-	auto pb32Shifted = m_IRBuilder.CreateShl( pb32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 24 ), false ) ), "" );
-	auto finalPC = m_IRBuilder.CreateOr( pc32, pb32Shifted, "" );
-	auto sw = m_IRBuilder.CreateSwitch( finalPC, dynamicJumpTableDefaultCaseBlock, static_cast<unsigned int>( m_LabelNamesToOffsets.size() ) );
+	auto pb32Shifted = m_IRBuilder.CreateShl( pb32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 16 ), false ) ), "" );
+	auto finalRuntimePC = m_IRBuilder.CreateOr( pc32, pb32Shifted, "" );
+
+	llvm::Value* args[] = { finalRuntimePC };
+	auto offset = m_IRBuilder.CreateCall( m_ConvertRuntimeAddressFunction, args );
+	auto sw = m_IRBuilder.CreateSwitch( offset, dynamicJumpTableDefaultCaseBlock, static_cast<unsigned int>( m_LabelNamesToOffsets.size() ) );
 	SelectBlock( dynamicJumpTableDefaultCaseBlock );
 	m_IRBuilder.CreateRetVoid();
 	for ( auto&& entry : m_LabelNamesToOffsets )
@@ -127,6 +157,8 @@ void Recompiler::GenerateCode()
 
 		void operator()( const Instruction& instruction )
 		{
+			m_Recompiler.PerformUpdateInstructionOutput( instruction.GetOffset(), instruction.GetInstructionString() );
+			auto nextPC = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
 			switch ( instruction.GetOpcode() )
 			{
 			case 0x00:
@@ -157,7 +189,7 @@ void Recompiler::GenerateCode()
 					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformOra8( operandValue );
 				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x29: // AND immediate
@@ -172,7 +204,7 @@ void Recompiler::GenerateCode()
 					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformAnd8( operandValue );
 				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x49: // EOR immediate
@@ -187,7 +219,7 @@ void Recompiler::GenerateCode()
 					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformEor8( operandValue );
 				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xA9: // LDA immediate
@@ -202,7 +234,7 @@ void Recompiler::GenerateCode()
 					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformLda8( operandValue );
 				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xA2: // LDX immediate
@@ -217,7 +249,7 @@ void Recompiler::GenerateCode()
 					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformLdx8( operandValue );
 				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xA0: // LDY immediate
@@ -232,7 +264,7 @@ void Recompiler::GenerateCode()
 					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformLdy8( operandValue );
 				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xC9: // CMP immediate
@@ -249,7 +281,7 @@ void Recompiler::GenerateCode()
 					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformCmp8( lValue, rValue );
 				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xE0: // CPX immediate
@@ -266,7 +298,7 @@ void Recompiler::GenerateCode()
 					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformCmp8( lValue, rValue );
 				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xC0: // CPY immediate
@@ -283,79 +315,79 @@ void Recompiler::GenerateCode()
 					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformCmp8( lValue, rValue );
 				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x18: // CLC implied
 			{
 				m_Recompiler.ClearCarry();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x38: // SEC implied
 			{
 				m_Recompiler.SetCarry();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xD8: // CLD implied
 			{
 				m_Recompiler.ClearDecimal();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x58: // CLI implied
 			{
 				m_Recompiler.ClearInterrupt();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xB8: // CLV implied
 			{
 				m_Recompiler.ClearOverflow();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xF8: // SED implied
 			{
 				m_Recompiler.SetDecimal();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x78: // SEI implied
 			{
 				m_Recompiler.SetInterrupt();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xEB: // XBA
 			{
 				m_Recompiler.PerformXba();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x1B: // TCS
 			{
 				m_Recompiler.PerformTcs();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x5B: // TCD
 			{
 				m_Recompiler.PerformTcd();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x7B: // TDC
 			{
 				m_Recompiler.PerformTdc();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x3B: // TSC
 			{
 				m_Recompiler.PerformTsc();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x60: // RTS
@@ -375,7 +407,8 @@ void Recompiler::GenerateCode()
 			break;
 			case 0x80: // BRA
 			{
-				m_Recompiler.PerformBra( instruction.GetJumpLabelName() );
+				auto pc = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), false ) ) );
+				m_Recompiler.PerformBra( instruction.GetJumpLabelName(), pc );
 			}
 			break;
 			case 0x4C: // JMP abs
@@ -392,21 +425,21 @@ void Recompiler::GenerateCode()
 			{
 				llvm::Value* value = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
 				m_Recompiler.PerformPea( value );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xC2: // REP
 			{
 				llvm::Value* value = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
 				m_Recompiler.PerformRep( value );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xE2: // SEP
 			{
 				llvm::Value* value = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
 				m_Recompiler.PerformSep( value );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x20: // JSR absolute
@@ -462,143 +495,151 @@ void Recompiler::GenerateCode()
 			case 0x8B: // PHB
 			{
 				m_Recompiler.PerformPhb();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x0B: // PHD
 			{
 				m_Recompiler.PerformPhd();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x4B: // PHK
 			{
 				m_Recompiler.PerformPhk();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x08: // PHP
 			{
 				m_Recompiler.PerformPhp();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xAB: // PLB
 			{
 				m_Recompiler.PerformPlb();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x2B: // PLD
 			{
 				m_Recompiler.PerformPld();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x28: // PLP
 			{
 				m_Recompiler.PerformPlp();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x3A: // DEC accumulator
 			{
 				m_Recompiler.PerformDec();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x1A: // INC accumulator
 			{
 				m_Recompiler.PerformInc();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xCA: // DEX accumulator
 			{
 				m_Recompiler.PerformDex();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xE8: // INX accumulator
 			{
 				m_Recompiler.PerformInx();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x88: // DEY accumulator
 			{
 				m_Recompiler.PerformDey();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xC8: // INY accumulator
 			{
 				m_Recompiler.PerformIny();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x0A: // ASL accumulator
 			{
 				m_Recompiler.PerformAsl();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x4A: // LSR accumulator
 			{
 				m_Recompiler.PerformLsr();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x2A: // ROL accumulator
 			{
 				m_Recompiler.PerformRol();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x6A: // ROR accumulator
 			{
 				m_Recompiler.PerformRor();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xAA: // TAX
 			{
 				m_Recompiler.PerformTax();
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xA8: // TAY
 			{
 				m_Recompiler.PerformTay();
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xBA: // TSX
 			{
 				m_Recompiler.PerformTsx();
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x8A: // TXA
 			{
 				m_Recompiler.PerformTxa();
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x9A: // TXS
 			{
 				m_Recompiler.PerformTxs();
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x9B: // TXY
 			{
 				m_Recompiler.PerformTxy();
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x98: // TYA
 			{
 				m_Recompiler.PerformTya();
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xBB: // TYX
 			{
 				m_Recompiler.PerformTyx();
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x69: // ADC
@@ -613,6 +654,7 @@ void Recompiler::GenerateCode()
 					auto data = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformAdc8( data );
 				}
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0xE9: // SBC
@@ -627,6 +669,7 @@ void Recompiler::GenerateCode()
 					auto data = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformSbc8( data );
 				}
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 			}
 			break;
 			case 0x89: // BIT
@@ -640,6 +683,10 @@ void Recompiler::GenerateCode()
 					auto data = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
 					m_Recompiler.PerformBit8( data );
 				}
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+				break;
+			default:
+				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 				break;
 			}
 		}
@@ -662,6 +709,8 @@ void Recompiler::Recompile()
 
 	// Add cycle function that will called every time an instruction is executed:
 	m_CycleFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext ), false ), llvm::Function::ExternalLinkage, "romCycle", m_RecompilationModule );
+	m_ConvertRuntimeAddressFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext ), false ), llvm::Function::ExternalLinkage, "convertRuntimeAddressToOffset", m_RecompilationModule );
+	m_UpdateInstructionOutput = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt8PtrTy( m_LLVMContext ) }, false ), llvm::Function::ExternalLinkage, "updateInstructionOutput", m_RecompilationModule );
 	m_PanicFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), false ), llvm::Function::ExternalLinkage, "panic", m_RecompilationModule );
 
 	llvm::FunctionType* mainFunctionType = llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext ), false );
@@ -674,6 +723,7 @@ void Recompiler::Recompile()
 	m_IRBuilder.CreateRetVoid();
 	m_IRBuilder.SetInsertPoint( entry );
 
+	AddInstructionStringGlobalVariables();
 	InitialiseBasicBlocksFromLabelNames();
 	AddDynamicJumpTableBlock();
 	GenerateCode();
@@ -721,6 +771,12 @@ void Recompiler::AddLabelNameToBasicBlock( const std::string& labelName, llvm::B
 	m_LabelNamesToBasicBlocks.emplace( labelName, basicBlock );
 }
 
+void Recompiler::AddOffsetToInstructionString( const uint32_t offset, const std::string& instructionString )
+{
+	auto s = m_IRBuilder.CreateGlobalString( instructionString, "" );
+	m_OffsetsToInstructionStringGlobalVariable.emplace( offset, s );
+}
+
 llvm::BasicBlock* Recompiler::CreateBlock( const char* name )
 {
 	llvm::BasicBlock* block = llvm::BasicBlock::Create( m_LLVMContext, name );
@@ -754,6 +810,27 @@ void Recompiler::PerformRomCycle( llvm::Value* value )
 	std::vector<llvm::Value*> params = { value };
 	m_IRBuilder.CreateCall( m_CycleFunction, params, "" );
 }
+
+void Recompiler::PerformRomCycle( llvm::Value* value, llvm::Value* newPc )
+{
+	m_IRBuilder.CreateStore( newPc, &m_registerPC );
+
+	std::vector<llvm::Value*> params = { value };
+	m_IRBuilder.CreateCall( m_CycleFunction, params, "" );
+}
+
+void Recompiler::PerformUpdateInstructionOutput( const uint32_t offset, const std::string& instructionString )
+{
+	auto pc32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::Type::getInt32Ty( m_LLVMContext ), "" );
+	auto pb32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerPB, "" ), llvm::Type::getInt32Ty( m_LLVMContext ), "" );
+	auto pb32Shifted = m_IRBuilder.CreateShl( pb32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 16 ), false ) ), "" );
+	auto finalRuntimePC = m_IRBuilder.CreateOr( pc32, pb32Shifted, "" );
+
+	auto s = m_OffsetsToInstructionStringGlobalVariable[ offset ];
+	std::vector<llvm::Value*> params = { finalRuntimePC, m_IRBuilder.CreateConstGEP2_32( s->getValueType(), s, 0, 0, "" ) };
+	m_IRBuilder.CreateCall( m_UpdateInstructionOutput, params, "" );
+}
+
 
 void Recompiler::PerformSep( llvm::Value* value )
 {
@@ -954,14 +1031,15 @@ void Recompiler::PerformBcc( const std::string& labelName )
 
 void Recompiler::PerformJsl( const std::string& labelName, const uint32_t jumpAddress )
 {
+	PushByteToStack( m_IRBuilder.CreateLoad( &m_registerPB, "" ) );
+	auto pcPlus3 = m_IRBuilder.CreateAdd( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 3, false ) ), "" );
+	PushWordToStack( pcPlus3 );
+
 	const uint16_t pc = jumpAddress & 0x0000ffff;
 	const uint8_t pb = ( jumpAddress & 0x00ff0000 ) >> 16;
 	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( pc ), false ) ), &m_registerPC );
 	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( pb ), false ) ), &m_registerPB );
 
-	PushByteToStack( m_IRBuilder.CreateLoad( &m_registerPB, "" ) );
-	auto pcPlus3 = m_IRBuilder.CreateAdd( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 3, false ) ), "" );
-	PushWordToStack( pcPlus3 );
 	auto search = m_LabelNamesToBasicBlocks.find( labelName );
 	if ( search != m_LabelNamesToBasicBlocks.end() )
 	{
@@ -978,11 +1056,11 @@ void Recompiler::PerformJsl( const std::string& labelName, const uint32_t jumpAd
 
 void Recompiler::PerformJsr( const std::string& labelName, const uint32_t jumpAddress )
 {
-	const uint16_t pc = jumpAddress & 0x0000ffff;
-	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( pc ), false ) ), &m_registerPC );
-
 	auto pcPlus2 = m_IRBuilder.CreateAdd( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 2, false ) ), "" );
 	PushWordToStack( pcPlus2  );
+
+	const uint16_t pc = jumpAddress & 0x0000ffff;
+	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( pc ), false ) ), &m_registerPC );
 	auto search = m_LabelNamesToBasicBlocks.find( labelName );
 	if ( search != m_LabelNamesToBasicBlocks.end() )
 	{
@@ -1035,12 +1113,12 @@ void Recompiler::PerformJmpLng( const std::string& labelName, const uint32_t jum
 	}
 }
 
-void Recompiler::PerformBra( const std::string& labelName )
+void Recompiler::PerformBra( const std::string& labelName, llvm::Value* newPC )
 {
 	auto search = m_LabelNamesToBasicBlocks.find( labelName );
 	if ( search != m_LabelNamesToBasicBlocks.end() )
 	{
-		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), newPC );
 		m_IRBuilder.CreateBr( search->second );
 		m_CurrentBasicBlock = nullptr;
 	}
@@ -1747,12 +1825,12 @@ void Recompiler::PushByteToStack( llvm::Value* value )
 
 void Recompiler::PushWordToStack( llvm::Value* value )
 {
-	auto high16 = m_IRBuilder.CreateShl( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 8, false ) ), "" );
+	auto high16 = m_IRBuilder.CreateLShr( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 8, false ) ), "" );
 	auto high = m_IRBuilder.CreateTrunc( high16, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
 	PushByteToStack( high );
 
 	auto low16 = m_IRBuilder.CreateAnd( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0xff, false ) ), "" );
-	auto low= m_IRBuilder.CreateTrunc( low16, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	auto low = m_IRBuilder.CreateTrunc( low16, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
 	PushByteToStack( low );
 }
 
@@ -2199,6 +2277,13 @@ void Recompiler::TestAndSetNegative8( llvm::Value* value )
 	m_IRBuilder.CreateStore( newP, &m_registerP );
 }
 
+llvm::Value* Recompiler::ComputeNewPC( llvm::Value* payloadSize )
+{
+	auto pc = m_IRBuilder.CreateLoad( &m_registerPC, "" );
+	auto newPc = m_IRBuilder.CreateAdd( pc, payloadSize );
+	return newPc;
+}
+
 void Recompiler::LoadAST( const char* filename )
 {
 	std::ifstream ifs( filename );
@@ -2229,16 +2314,16 @@ void Recompiler::LoadAST( const char* filename )
 				{
 					if ( current_node[ "Instruction" ].contains( "jump_label_name" ) )
 					{
-						m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "operand" ], current_node[ "Instruction" ][ "jump_label_name" ],  current_node[ "Instruction" ][ "operand_size" ],  current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ] } );
+						m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "instruction_string" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "operand" ], current_node[ "Instruction" ][ "jump_label_name" ],  current_node[ "Instruction" ][ "operand_size" ],  current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ] } );
 					}
 					else
 					{
-						m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "operand" ], current_node[ "Instruction" ][ "operand_size" ],  current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ] } );
+						m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "instruction_string" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "operand" ], current_node[ "Instruction" ][ "operand_size" ],  current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ] } );
 					}
 				}
 				else
 				{
-					m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ] } );
+					m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "instruction_string" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ] } );
 				}
 			}
 		}
@@ -2260,31 +2345,37 @@ Recompiler::Label::~Label()
 
 }
 
-Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode )
+Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode )
 	: m_Offset( offset )
+	, m_InstructionString( instructionString )
 	, m_Opcode( opcode )
 	, m_Operand( operand )
+	, m_OperandSize( operand_size )
 	, m_MemoryMode( memoryMode )
 	, m_IndexMode( indexMode )
 	, m_HasOperand( true )
 {
 }
 
-Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode )
+Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode )
 	: m_Offset( offset )
+	, m_InstructionString( instructionString )
 	, m_Opcode( opcode )
 	, m_Operand( operand )
 	, m_JumpLabelName( jumpLabelName )
+	, m_OperandSize( operand_size )
 	, m_MemoryMode( memoryMode )
 	, m_IndexMode( indexMode )
 	, m_HasOperand( true )
 {
 }
 
-Recompiler::Instruction::Instruction( const uint32_t offset, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode )
+Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode )
 	: m_Offset( offset )
+	, m_InstructionString( instructionString )
 	, m_Opcode( opcode )
 	, m_Operand( 0 )
+	, m_OperandSize( 0 )
 	, m_MemoryMode( memoryMode )
 	, m_IndexMode( indexMode )
 	, m_HasOperand( false )

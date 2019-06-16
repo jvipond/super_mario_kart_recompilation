@@ -21,6 +21,8 @@ public:
 	void InitialiseBasicBlocksFromLabelNames();
 	void AddDynamicJumpTableBlock();
 	void GenerateCode();
+	void AddOffsetToInstructionString( const uint32_t offset, const std::string& stringGlobalVariable );
+	void AddInstructionStringGlobalVariables();
 
 	const std::map< std::string, llvm::BasicBlock* >& GetLabelNamesToBasicBlocks( void ) const { return m_LabelNamesToBasicBlocks; }
 	const llvm::BasicBlock* GetCurrentBasicBlock( void ) const { return m_CurrentBasicBlock; }
@@ -66,7 +68,7 @@ public:
 	void PerformRts();
 	void PerformRti();
 	void PerformPea( llvm::Value* value );
-	void PerformBra( const std::string& labelName );
+	void PerformBra( const std::string& labelName, llvm::Value* newPC );
 	void PerformJmpAbs( const std::string& labelName, const uint32_t jumpAddress );
 	void PerformJmpLng( const std::string& labelName, const uint32_t jumpAddress );
 	void PerformJsr( const std::string& labelName, const uint32_t jumpAddress );
@@ -129,7 +131,10 @@ public:
 	void PerformRegisterTransfer( llvm::Value* sourceRegister, llvm::Value* destinationRegister );
 	llvm::Value* PerformRegisterTransfer16( llvm::Value* sourceRegister, llvm::Value* destinationRegister );
 	llvm::Value* PerformRegisterTransfer8( llvm::Value* sourceRegister, llvm::Value* destinationRegister );
+	llvm::Value* ComputeNewPC( llvm::Value* payloadSize );
 	void PerformRomCycle( llvm::Value* value );
+	void PerformRomCycle( llvm::Value* value, llvm::Value* newPc );
+	void PerformUpdateInstructionOutput( const uint32_t offset, const std::string& instructionString );
 	void Panic( void );
 	llvm::Value* PullByteFromStack();
 	llvm::Value* PullWordFromStack();
@@ -174,14 +179,16 @@ private:
 	class Instruction
 	{
 	public:
-		Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode );
-		Instruction( const uint32_t offset, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode );
-		Instruction( const uint32_t offset, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode );
+		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode );
+		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode );
+		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode );
 		~Instruction();
 
 		uint8_t GetOpcode( void ) const { return m_Opcode; }
+		const std::string& GetInstructionString( void ) const { return m_InstructionString; }
 		uint32_t GetOperand( void ) const { return m_Operand; }
 		uint32_t GetOperandSize( void ) const { return m_OperandSize; }
+		uint32_t GetTotalSize( void ) const { return m_OperandSize + 1; }
 		bool HasOperand( void ) const { return m_HasOperand; }
 		const MemoryMode& GetMemoryMode() const { return m_MemoryMode; }
 		const MemoryMode& GetIndexMode() const { return m_IndexMode; }
@@ -190,6 +197,7 @@ private:
 
 	private:
 		uint32_t m_Offset;
+		std::string m_InstructionString;
 		uint8_t m_Opcode;
 		uint32_t m_Operand;
 		std::string m_JumpLabelName;
@@ -213,6 +221,7 @@ private:
 	std::map< uint32_t, std::string > m_OffsetsToLabelNames;
 	std::map< std::string, llvm::BasicBlock* > m_LabelNamesToBasicBlocks;
 	std::map< uint32_t, llvm::BasicBlock* > m_DynamicJumpOffsetsToBasicBlocks;
+	std::map< uint32_t, llvm::GlobalVariable* > m_OffsetsToInstructionStringGlobalVariable;
 
 	llvm::BasicBlock* m_DynamicJumpTableBlock;
 	llvm::Function* m_MainFunction;
@@ -237,6 +246,9 @@ private:
 	llvm::Function* m_CycleFunction;
 	llvm::Function* m_PanicFunction;
 	llvm::BasicBlock* m_PanicBlock;
+
+	llvm::Function* m_ConvertRuntimeAddressFunction;
+	llvm::Function* m_UpdateInstructionOutput;
 };
 
 #endif // RECOMPILER_HPP
