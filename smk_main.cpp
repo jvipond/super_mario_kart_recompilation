@@ -124,7 +124,7 @@ extern "C"
 				ImGui::Begin( "Instruction Trace" );
 				for ( auto& [ pc, instructionString ] : instructionTrace )
 				{
-					ImGui::Text( "$%06hX %s", pc, instructionString );
+					ImGui::Text( "$%06X %s", pc, instructionString );
 				}
 				ImGui::SetScrollHere( 1.0f );
 				ImGui::End();

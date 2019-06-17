@@ -454,42 +454,58 @@ void Recompiler::GenerateCode()
 			break;
 			case 0x90: // BCC
 			{
-				m_Recompiler.PerformBcc( instruction.GetJumpLabelName() );
+				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() + instruction.GetOperand() ), true ) ) );
+				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+				m_Recompiler.PerformBcc( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
 			}
 			break;
 			case 0xB0: // BCS
 			{
-				m_Recompiler.PerformBcs( instruction.GetJumpLabelName() );
+				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() + instruction.GetOperand() ), true ) ) );
+				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+				m_Recompiler.PerformBcs( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
 			}
 			break;
 			case 0xF0: // BEQ
 			{
-				m_Recompiler.PerformBeq( instruction.GetJumpLabelName() );
+				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() + instruction.GetOperand() ), true ) ) );
+				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+				m_Recompiler.PerformBeq( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
 			}
 			break;
 			case 0xD0: // BNE
 			{
-				m_Recompiler.PerformBne( instruction.GetJumpLabelName() );
+				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() + instruction.GetOperand() ), true ) ) );
+				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+				m_Recompiler.PerformBne( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
 			}
 			break;
 			case 0x30: // BMI
 			{
-				m_Recompiler.PerformBmi( instruction.GetJumpLabelName() );
+				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() + instruction.GetOperand() ), true ) ) );
+				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+				m_Recompiler.PerformBmi( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
 			}
 			break;
 			case 0x10: // BPL
 			{
-				m_Recompiler.PerformBpl( instruction.GetJumpLabelName() );
+				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() + instruction.GetOperand() ), true ) ) );
+				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+				m_Recompiler.PerformBpl( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
 			}
 			break;
 			case 0x50: // BVC
 			{
-				m_Recompiler.PerformBvc( instruction.GetJumpLabelName() );
+				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() + instruction.GetOperand() ), true ) ) );
+				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+				m_Recompiler.PerformBvc( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
 			}
 			break;
 			case 0x70: // BVS
 			{
-				m_Recompiler.PerformBvs( instruction.GetJumpLabelName() );
+				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() + instruction.GetOperand() ), true ) ) );
+				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+				m_Recompiler.PerformBvs( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
 			}
 			break;
 			case 0x8B: // PHB
@@ -845,183 +861,91 @@ void Recompiler::PerformRep( llvm::Value* value )
 	m_IRBuilder.CreateStore( result, &m_registerP );
 }
 
-void Recompiler::PerformBvc( const std::string& labelName )
+void Recompiler::PerformBvc( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, true ) ), "" );
-
 	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, true ) ) );
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
-	if ( search != m_LabelNamesToBasicBlocks.end() )
-	{
-		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-		if ( m_CurrentBasicBlock )
-		{
-			elseBlock->moveAfter( m_CurrentBasicBlock );
-		}
-		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
-		SelectBlock( elseBlock );
-	}
-	else
-	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
-	}
+	
+	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBvs( const std::string& labelName )
+void Recompiler::PerformBvs( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, true ) ), "" );
-
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, true ) ) );
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
-	if ( search != m_LabelNamesToBasicBlocks.end() )
-	{
-		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-		if ( m_CurrentBasicBlock )
-		{
-			elseBlock->moveAfter( m_CurrentBasicBlock );
-		}
-		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
-		SelectBlock( elseBlock );
-	}
-	else
-	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
-	}
+	
+	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBpl( const std::string& labelName )
+void Recompiler::PerformBpl( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, true ) ), "" );
-
 	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, true ) ) );
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
-	if ( search != m_LabelNamesToBasicBlocks.end() )
-	{
-		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-		if ( m_CurrentBasicBlock )
-		{
-			elseBlock->moveAfter( m_CurrentBasicBlock );
-		}
-		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
-		SelectBlock( elseBlock );
-	}
-	else
-	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
-	}
+	
+	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBmi( const std::string& labelName )
+void Recompiler::PerformBmi( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, true ) ), "" );
-
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, true ) ) );
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
-	if ( search != m_LabelNamesToBasicBlocks.end() )
-	{
-		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-		if ( m_CurrentBasicBlock )
-		{
-			elseBlock->moveAfter( m_CurrentBasicBlock );
-		}
-		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
-		SelectBlock( elseBlock );
-	}
-	else
-	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
-	}
+	
+	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBne( const std::string& labelName )
+void Recompiler::PerformBne( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ), "" );
-
 	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ) );
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
-	if ( search != m_LabelNamesToBasicBlocks.end() )
-	{
-		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-		if ( m_CurrentBasicBlock )
-		{
-			elseBlock->moveAfter( m_CurrentBasicBlock );
-		}
-		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
-		SelectBlock( elseBlock );
-	}
-	else
-	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
-	}
+	
+	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBeq( const std::string& labelName )
+void Recompiler::PerformBeq( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ), "" );
-
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ) );
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
-	if ( search != m_LabelNamesToBasicBlocks.end() )
-	{
-		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-		if ( m_CurrentBasicBlock )
-		{
-			elseBlock->moveAfter( m_CurrentBasicBlock );
-		}
-		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
-		SelectBlock( elseBlock );
-	}
-	else
-	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
-	}
+	
+	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBcs( const std::string& labelName )
+void Recompiler::PerformBcs( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ), "" );
-
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ) );
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
-	if ( search != m_LabelNamesToBasicBlocks.end() )
-	{
-		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-		if ( m_CurrentBasicBlock )
-		{
-			elseBlock->moveAfter( m_CurrentBasicBlock );
-		}
-		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
-		SelectBlock( elseBlock );
-	}
-	else
-	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
-	}
+
+	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBcc( const std::string& labelName )
+void Recompiler::PerformBcc( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ), "" );
-
 	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ) );
+	
+	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
+}
+
+void Recompiler::AddConditionalBranch( llvm::Value* cond, const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
+{
 	auto search = m_LabelNamesToBasicBlocks.find( labelName );
 	if ( search != m_LabelNamesToBasicBlocks.end() )
 	{
-		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		llvm::BasicBlock* takeBranchBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 		if ( m_CurrentBasicBlock )
 		{
-			elseBlock->moveAfter( m_CurrentBasicBlock );
+			takeBranchBlock->moveAfter( m_CurrentBasicBlock );
 		}
-		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-		m_IRBuilder.CreateCondBr( cond, search->second, elseBlock );
+		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		if ( takeBranchBlock )
+		{
+			elseBlock->moveAfter( takeBranchBlock );
+		}
+		m_IRBuilder.CreateCondBr( cond, takeBranchBlock, elseBlock );
+		SelectBlock( takeBranchBlock );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), pcBranchTaken );
+		m_IRBuilder.CreateBr( search->second );
 		SelectBlock( elseBlock );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), pcBranchNotTaken );
 	}
 	else
 	{
