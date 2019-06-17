@@ -1139,7 +1139,7 @@ void Recompiler::PerformPhp( void )
 void Recompiler::PerformPlb( void )
 {
 	auto stackValue = PullByteFromStack();
-	m_IRBuilder.CreateStore( stackValue, &m_registerPB );
+	m_IRBuilder.CreateStore( stackValue, &m_registerDB );
 	TestAndSetZero8( stackValue );
 	TestAndSetNegative8( stackValue );
 }
