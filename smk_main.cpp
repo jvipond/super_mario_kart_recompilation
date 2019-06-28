@@ -51,6 +51,7 @@ extern "C"
 		instructionTrace.push_back( { pc, instructionString, 1 } );
 	}
 
+	static bool autoStep = false;
 	static MemoryEditor mem_edit;
 	void romCycle( const int32_t cycles, const uint32_t implemented )
 	{
@@ -79,7 +80,6 @@ extern "C"
 			ImGui_ImplOpenGL3_NewFrame();
 			ImGui_ImplSDL2_NewFrame( window );
 			ImGui::NewFrame();
-
 			{
 				ImGui::Begin( "Register Status" );
 				ImGui::Text( "A = 0x%04hX", A );
@@ -95,9 +95,16 @@ extern "C"
 																						 ( P & ( 1 << 4 ) ) ? 'X' : 'x', ( P & ( 1 << 3 ) ) ? 'D' : 'd', ( P & ( 1 << 2 ) ) ? 'I' : 'i',
 																						 ( P & ( 1 << 1 ) ) ? 'Z' : 'z', ( P & ( 1 << 0 ) ) ? 'C' : 'c' );
 
-				if ( ImGui::Button( "Step" ) )
+				done = autoStep;
+				if ( ImGui::Button( "Single Step" ) )
 				{
 					done = true;
+				}
+
+				if ( ImGui::Button( "Auto Step" ) )
+				{
+					autoStep = !autoStep;
+					done = autoStep;
 				}
 
 				ImGui::End();
