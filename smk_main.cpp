@@ -11,13 +11,6 @@
 #include "imgui/imgui_memory_editor.h"
 #include <vector>
 
-std::tuple<uint32_t, uint32_t> getBankAndOffset( uint32_t addr )
-{
-	auto bank = ( addr & 0xFF0000 ) >> 16;
-	auto bank_offset = ( addr & 0x00FFFF );
-	return { bank, bank_offset };
-}
-
 extern "C"
 {
 	int16_t A = 0;
@@ -51,22 +44,24 @@ extern "C"
 		std::exit( EXIT_SUCCESS );
 	}
 
-	std::vector<std::tuple<uint32_t, const char*>> instructionTrace;
+	std::vector<std::tuple<uint32_t, const char*, uint32_t>> instructionTrace;
 
 	void updateInstructionOutput( const uint32_t pc, const char* instructionString )
 	{
-		instructionTrace.push_back( { pc, instructionString } );
+		instructionTrace.push_back( { pc, instructionString, 1 } );
 	}
 
 	static MemoryEditor mem_edit;
-	void romCycle( const int32_t cycles )
+	void romCycle( const int32_t cycles, const uint32_t implemented )
 	{
+		std::get<2>( instructionTrace.back() ) = implemented;
 		ImGuiIO& io = ImGui::GetIO();
 
 		bool show_demo_window = false;
 		bool show_another_window = false;
 		ImVec4 clear_color = ImVec4( 0.45f, 0.55f, 0.60f, 1.00f );
 
+		bool scrollToBottom = true;
 		bool done = false;
 		while ( !done )
 		{
@@ -122,11 +117,17 @@ extern "C"
 
 			{
 				ImGui::Begin( "Instruction Trace" );
-				for ( auto& [ pc, instructionString ] : instructionTrace )
+				for ( auto& [ pc, instructionString, hasBeenImplemented ] : instructionTrace )
 				{
-					ImGui::Text( "$%06X %s", pc, instructionString );
+					ImGui::Text( "$%06X %s ", pc, instructionString );
+					ImGui::SameLine();
+					ImGui::TextColored( ImVec4( 1.0f, 0.0f, 1.0f, 1.0f ), "%s", hasBeenImplemented == 0 ? "[NOT IMPLEMENTED]" : "" );
 				}
-				ImGui::SetScrollHere( 1.0f );
+				if ( scrollToBottom )
+				{
+					ImGui::SetScrollHere( 1.0f );
+				}
+				scrollToBottom = false;
 				ImGui::End();
 			}
 
@@ -138,47 +139,6 @@ extern "C"
 			ImGui_ImplOpenGL3_RenderDrawData( ImGui::GetDrawData() );
 			SDL_GL_SwapWindow( window );
 		}
-	}
-
-	uint32_t convertRuntimeAddressToOffset( uint32_t addr )
-	{
-		auto [ bank, bank_offset ] = getBankAndOffset( addr );
-
-		if ( addr < 0x400000 )
-		{
-			return addr;
-		}
-
-		auto adjustedAddress = addr;
-		if ( 0x40 <= bank && bank <= 0x7d )
-		{
-			adjustedAddress = addr - 0x400000;
-		}
-
-		else if ( 0x80 <= bank && bank <= 0x9f )
-		{
-			adjustedAddress = addr - 0x800000;
-		}
-		else if ( 0xa0 <= bank && bank <= 0xbf )
-		{
-			adjustedAddress = addr - 0xa00000 + 0x200000;
-		}
-
-		else if ( 0xc0 <= bank && bank <= 0xfd )
-		{
-			adjustedAddress = addr - 0xc00000;
-		}
-				
-		else if ( 0xfe <= bank && bank <= 0xff )
-		{
-			adjustedAddress = addr - 0xc00000;
-		}	
-		else
-		{
-			assert( adjustedAddress != addr );
-		}
-
-		return adjustedAddress;
 	}
 
 	void panic( void )
