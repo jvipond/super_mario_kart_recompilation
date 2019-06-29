@@ -44,22 +44,33 @@ extern "C"
 		std::exit( EXIT_SUCCESS );
 	}
 
-	std::vector<std::tuple<uint32_t, const char*, uint32_t>> instructionTrace;
+	struct RegisterState
+	{
+		int16_t A = 0;
+		int8_t DB = 0;
+		int16_t DP = 0;
+		int8_t PB = 0;
+		int16_t PC = 0;
+		int16_t SP = 0;
+		int16_t X = 0;
+		int16_t Y = 0;
+		int8_t P = 0;
+	};
+	std::vector<std::tuple<uint32_t, const char*, RegisterState, uint32_t>> instructionTrace;
 
 	void updateInstructionOutput( const uint32_t pc, const char* instructionString )
 	{
-		instructionTrace.push_back( { pc, instructionString, 1 } );
+		RegisterState rs = { A, DB, DP, PB, PC, SP, X, Y, P };
+		instructionTrace.push_back( { pc, instructionString, rs, 1 } );
 	}
 
 	static bool autoStep = false;
 	static MemoryEditor mem_edit;
 	void romCycle( const int32_t cycles, const uint32_t implemented )
 	{
-		std::get<2>( instructionTrace.back() ) = implemented;
+		std::get<3>( instructionTrace.back() ) = implemented;
 		ImGuiIO& io = ImGui::GetIO();
 
-		bool show_demo_window = false;
-		bool show_another_window = false;
 		ImVec4 clear_color = ImVec4( 0.45f, 0.55f, 0.60f, 1.00f );
 
 		bool scrollToBottom = true;
@@ -124,12 +135,49 @@ extern "C"
 
 			{
 				ImGui::Begin( "Instruction Trace" );
-				for ( auto& [ pc, instructionString, hasBeenImplemented ] : instructionTrace )
+				ImGui::Columns( 11, "Instruction Trace columns" );
+				ImGui::Separator();
+				ImGui::SetColumnWidth( -1, 60.0f );
+				ImGui::Text( "A" ); ImGui::NextColumn();
+				ImGui::SetColumnWidth( -1, 60.0f );
+				ImGui::Text( "X" ); ImGui::NextColumn();
+				ImGui::SetColumnWidth( -1, 60.0f );
+				ImGui::Text( "Y" ); ImGui::NextColumn();
+				ImGui::SetColumnWidth( -1, 50.0f );
+				ImGui::Text( "DB" ); ImGui::NextColumn();
+				ImGui::SetColumnWidth( -1, 60.0f );
+				ImGui::Text( "DP" ); ImGui::NextColumn();
+				ImGui::SetColumnWidth( -1, 50.0f );
+				ImGui::Text( "PB" ); ImGui::NextColumn();
+				ImGui::SetColumnWidth( -1, 60.0f );
+				ImGui::Text( "SP" ); ImGui::NextColumn();
+				ImGui::SetColumnWidth( -1, 75.0f );
+				ImGui::Text( "P" ); ImGui::NextColumn();
+				ImGui::SetColumnWidth( -1, 75.0f );
+				ImGui::Text( "PC" ); ImGui::NextColumn();
+				ImGui::SetColumnWidth( -1, 350.0f );
+				ImGui::Text( "Instruction" ); ImGui::NextColumn();
+				ImGui::SetColumnWidth( -1, 150.0f );
+				ImGui::Text( "Implemented" ); ImGui::NextColumn();
+				ImGui::Separator();
+				for ( auto& [ pc, instructionString, rs, hasBeenImplemented ] : instructionTrace )
 				{
-					ImGui::Text( "$%06X %s ", pc, instructionString );
-					ImGui::SameLine();
-					ImGui::TextColored( ImVec4( 1.0f, 0.0f, 1.0f, 1.0f ), "%s", hasBeenImplemented == 0 ? "[NOT IMPLEMENTED]" : "" );
+					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%04hX", rs.A ); ImGui::NextColumn();
+					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%04hX", rs.X ); ImGui::NextColumn();
+					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%04hX", rs.Y ); ImGui::NextColumn();
+					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%02hhX", rs.DB ); ImGui::NextColumn();
+					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%04hX", rs.DP ); ImGui::NextColumn();
+					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%02hhX", rs.PB ); ImGui::NextColumn();
+					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%04hX", rs.SP ); ImGui::NextColumn();
+					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "%c%c%c%c%c%c%c%c", ( rs.P & ( 1 << 7 ) ) ? 'N' : 'n', ( rs.P & ( 1 << 6 ) ) ? 'V' : 'v', ( rs.P & ( 1 << 5 ) ) ? 'M' : 'm',
+						( rs.P & ( 1 << 4 ) ) ? 'X' : 'x', ( rs.P & ( 1 << 3 ) ) ? 'D' : 'd', ( rs.P & ( 1 << 2 ) ) ? 'I' : 'i',
+						( rs.P & ( 1 << 1 ) ) ? 'Z' : 'z', ( rs.P & ( 1 << 0 ) ) ? 'C' : 'c' ); ImGui::NextColumn();
+					ImGui::TextColored( ImVec4( 1.0f, 1.0f, 0.0f, 1.0f ), "$%06X", pc ); ImGui::NextColumn();
+					ImGui::TextColored( ImVec4( 1.0f, 1.0f, 0.0f, 1.0f ), instructionString ); ImGui::NextColumn();
+					ImGui::TextColored( ImVec4( 1.0f, 0.0f, 1.0f, 1.0f ), "%s", hasBeenImplemented == 0 ? "[NOT IMPLEMENTED]" : "" ); ImGui::NextColumn();
+					ImGui::Separator();
 				}
+				ImGui::Columns( 1 );
 				if ( scrollToBottom )
 				{
 					ImGui::SetScrollHere( 1.0f );
@@ -198,7 +246,7 @@ int main( int argc, char** argv )
 	SDL_GL_SetAttribute( SDL_GL_DEPTH_SIZE, 24 );
 	SDL_GL_SetAttribute( SDL_GL_STENCIL_SIZE, 8 );
 	SDL_WindowFlags window_flags = (SDL_WindowFlags)( SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI );
-	window = SDL_CreateWindow( "SMK", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags );
+	window = SDL_CreateWindow( "SMK", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1600, 960, window_flags );
 	gl_context = SDL_GL_CreateContext( window );
 	SDL_GL_SetSwapInterval( 1 ); // Enable vsync
 
