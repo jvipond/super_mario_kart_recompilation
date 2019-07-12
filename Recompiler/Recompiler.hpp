@@ -50,6 +50,10 @@ public:
 	void PerformCmp8( llvm::Value* lValue, llvm::Value* rValue );
 	void PerformAdc16( llvm::Value* value );
 	void PerformAdc8( llvm::Value* value );
+	void PerformAdcAbs( const uint32_t address );
+	void PerformAdcDir( const uint32_t address );
+	void PerformAdcLong( const uint32_t address );
+	void PerformSbcDir( const uint32_t address );
 	void PerformSbc16( llvm::Value* value );
 	void PerformSbc8( llvm::Value* value );
 	void PerformBit16Imm( llvm::Value* value );
@@ -88,6 +92,10 @@ public:
 	void PerformRep( llvm::Value* value );
 	void PerformPha( void );
 	void PerformPla( void );
+	void PerformPhy( void );
+	void PerformPly( void );
+	void PerformPhx( void );
+	void PerformPlx( void );
 	void PerformPhb( void );
 	void PerformPhd( void );
 	void PerformPhk( void );
@@ -179,6 +187,7 @@ public:
 	void PerformLdaDir( const uint32_t address );
 	void PerformLdaDirIdxX( const uint32_t address );
 	void PerformLdaLongIdxX( const uint32_t address );
+	void PerformLdaDirIndLngIdxY( const uint32_t address );
 	void PerformLdxAbs( const uint32_t address );
 	void PerformLdxAbsIdxY( const uint32_t address );
 	void PerformLdxDir( const uint32_t address );
@@ -331,6 +340,9 @@ private:
 	llvm::Function* m_CycleFunction;
 	llvm::Function* m_PanicFunction;
 	llvm::BasicBlock* m_PanicBlock;
+
+	llvm::Function* m_SPCWritePortFunction;
+	llvm::Function* m_SPCReadPortFunction;
 
 	llvm::Function* m_ConvertRuntimeAddressFunction;
 	llvm::Function* m_UpdateInstructionOutput;

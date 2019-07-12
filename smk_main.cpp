@@ -10,6 +10,11 @@
 #include "imgui/imgui_impl_opengl3.h"
 #include "imgui/imgui_memory_editor.h"
 #include <vector>
+#include <string>
+#include <fstream>
+#include "SNES_SPC.h"
+
+static constexpr bool compareToDebugLog = false;
 
 extern "C"
 {
@@ -56,15 +61,53 @@ extern "C"
 		int16_t Y = 0;
 		int8_t P = 0;
 	};
-	std::vector<std::tuple<uint32_t, const char*, RegisterState, uint32_t>> instructionTrace;
 
+	struct Snes9xLogState
+	{
+		std::string Text;
+		int16_t A = 0;
+		int16_t X = 0;
+		int16_t Y = 0;
+		int16_t DP = 0;
+		int8_t DB = 0;
+		int16_t SP = 0;
+	};
+	
+	std::vector<Snes9xLogState> logState;
+	uint32_t currentLogStateIndex = 0;
+	static bool autoStep = false;
+
+	std::vector<std::tuple<uint32_t, const char*, RegisterState, uint32_t>> instructionTrace;
 	void updateInstructionOutput( const uint32_t pc, const char* instructionString )
 	{
 		RegisterState rs = { A, DB, DP, PB, PC, SP, X, Y, P };
 		instructionTrace.push_back( { pc, instructionString, rs, 1 } );
+
+		if constexpr ( compareToDebugLog )
+		{
+			if ( currentLogStateIndex < logState.size() )
+			{
+				const Snes9xLogState& ls = logState[ currentLogStateIndex ];
+				if ( !( rs.A == ls.A && rs.X == ls.X && rs.Y == ls.Y && rs.DP == ls.DP && rs.DB == ls.DB && rs.SP == ls.SP ) )
+				{
+					std::cout << "Log state does not match register state" << std::endl;
+					std::cout << "InstructionString = " << instructionString << " ls.String = " << ls.Text << std::endl;
+					std::cout << "rs.A = " << rs.A << " ls.A = " << ls.A << std::endl;
+					std::cout << "rs.X = " << rs.X << " ls.X = " << ls.X << std::endl;
+					std::cout << "rs.Y = " << rs.Y << " ls.Y = " << ls.Y << std::endl;
+					std::cout << "rs.DP = " << rs.DP << " ls.DP = " << ls.DP << std::endl;
+					std::cout << "rs.DB = " << rs.DB << " ls.DB = " << ls.DB << std::endl;
+					std::cout << "rs.SP = " << rs.SP << " ls.SP = " << ls.SP << std::endl;
+
+					autoStep = false;
+				}
+				assert( rs.A == ls.A && rs.X == ls.X && rs.Y == ls.Y && rs.DP == ls.DP && rs.DB == ls.DB && rs.SP == ls.SP );
+			}
+
+			currentLogStateIndex++;
+		}
 	}
 
-	static bool autoStep = false;
 	static MemoryEditor mem_edit;
 	void romCycle( const int32_t cycles, const uint32_t implemented )
 	{
@@ -201,6 +244,36 @@ extern "C"
 		std::cout << "Exited with error" << std::endl;
 		std::exit( EXIT_FAILURE );
 	}
+
+	uint8_t iplRom[] = { 0xCD, 0xEF, 0xBD, 0xE8, 0x00, 0xC6, 0x1D, 0xD0, 0xFC, 0x8F, 0xAA, 0xF4, 0x8F, 0xBB, 0xF5, 0x78,
+											 0xCC, 0xF4, 0xD0, 0xFB, 0x2F, 0x19, 0xEB, 0xF4, 0xD0, 0xFC, 0x7E, 0xF4, 0xD0, 0x0B, 0xE4, 0xF5,
+											 0xCB, 0xF4, 0xD7, 0x00, 0xFC, 0xD0, 0xF3, 0xAB, 0x01, 0x10, 0xEF, 0x7E, 0xF4, 0x10, 0xEB, 0xBA,
+											 0xF6, 0xDA, 0x00, 0xBA, 0xF4, 0xC4, 0xF4, 0xDD, 0x5D, 0xD0, 0xDB, 0x1F, 0x00, 0x00, 0xC0, 0xFF };
+
+	SNES_SPC snesSPC;
+	static int32_t stime = 0;
+
+	void incrementCycleCount( void )
+	{
+		stime++;
+		if ( stime > 1024000 / 2 )
+		{
+			snesSPC.end_frame( 1024000 / 2 );
+			stime = 0;
+		}
+	}
+
+	void spcWritePort( int32_t port, int32_t data )
+	{
+		incrementCycleCount();
+		snesSPC.write_port( stime, port, data );
+	}
+
+	int32_t spcReadPort( int32_t port )
+	{
+		incrementCycleCount();
+		return snesSPC.read_port( stime, port );
+	}
 }
 
 enum InterruptVector 
@@ -209,6 +282,28 @@ enum InterruptVector
 	INTERRUPT_VECTOR_NMI,
 	INTERRUPT_VECTOR_IRQ,
 };
+
+void LoadLog( const char* logPath )
+{
+	std::ifstream infile( logPath );
+	std::string line;
+	while ( std::getline( infile, line ) )
+	{
+		if ( line == "" )
+		{
+			continue;
+		}
+
+		int16_t a = static_cast<int16_t>( strtol( line.substr( line.find( "A:" ) + 2, 4 ).c_str(), NULL, 16 ) );
+		int16_t x = static_cast<int16_t>( strtol( line.substr( line.find( "X:" ) + 2, 4 ).c_str(), NULL, 16 ) );
+		int16_t y = static_cast<int16_t>( strtol( line.substr( line.find( "Y:" ) + 2, 4 ).c_str(), NULL, 16 ) );
+		int16_t dp = static_cast<int16_t>( strtol( line.substr( line.find( "D:" ) + 2, 4 ).c_str(), NULL, 16 ) );
+		int8_t db = static_cast<int8_t>( strtol( line.substr( line.find( "DB:" ) + 3, 2 ).c_str(), NULL, 16 ) );
+		int16_t sp = static_cast<int16_t>( strtol( line.substr( line.find( "S:" ) + 2, 4 ).c_str(), NULL, 16 ) );
+
+		logState.push_back( { line, a, x, y, dp, db, sp } );
+	}
+}
 
 void LoadRom( const char* romPath )
 {
@@ -231,6 +326,8 @@ void LoadRom( const char* romPath )
 
 int main( int argc, char** argv ) 
 {	
+	snesSPC.init();
+	snesSPC.init_rom( iplRom );
 	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER ) != 0 )
 	{
 		std::cout << "Error: " << SDL_GetError() << std::endl;
@@ -267,6 +364,14 @@ int main( int argc, char** argv )
 	SDL_GL_MakeCurrent( window, gl_context );
 
 	LoadRom( "Super Mario Kart (USA).sfc" );
+	memset( wRam, 0x55, sizeof(wRam) );
+	if constexpr ( compareToDebugLog )
+	{
+		LoadLog( "Super Mario Kart (USA)0000.log" );
+	}
+	snesSPC.reset();
+	snesSPC.end_frame( 1024000 / 2 );
+
 	start( INTERRUPT_VECTOR_ROM_RESET );
 
 	quit();
