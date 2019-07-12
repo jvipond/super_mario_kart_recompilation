@@ -12,7 +12,7 @@
 #include <vector>
 #include <string>
 #include <fstream>
-#include "SNES_SPC.h"
+#include "spc/SNES_SPC.h"
 
 static constexpr bool compareToDebugLog = false;
 
