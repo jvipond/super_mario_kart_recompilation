@@ -10,6 +10,7 @@
 #include "imgui/imgui_impl_opengl3.h"
 #include "imgui/imgui_memory_editor.h"
 #include <vector>
+#include <deque>
 #include <string>
 #include <fstream>
 #include "spc/SNES_SPC.h"
@@ -27,6 +28,8 @@ extern "C"
 	int16_t X = 0;
 	int16_t Y = 0;
 	int8_t P = 0;
+	int8_t DynamicLoad8 = 0;
+	int16_t DynamicLoad16 = 0;
 
 	int8_t wRam[ 0x20000 ] = { 0 };
 	int8_t rom[ 0x80000 ] = { 0 };
@@ -77,10 +80,15 @@ extern "C"
 	uint32_t currentLogStateIndex = 0;
 	static bool autoStep = false;
 
-	std::vector<std::tuple<uint32_t, const char*, RegisterState, uint32_t>> instructionTrace;
+	std::deque<std::tuple<uint32_t, const char*, RegisterState, uint32_t>> instructionTrace;
 	void updateInstructionOutput( const uint32_t pc, const char* instructionString )
 	{
 		RegisterState rs = { A, DB, DP, PB, PC, SP, X, Y, P };
+		
+		if ( instructionTrace.size() >= 32 )
+		{
+			instructionTrace.pop_front();
+		}
 		instructionTrace.push_back( { pc, instructionString, rs, 1 } );
 
 		if constexpr ( compareToDebugLog )
@@ -255,7 +263,7 @@ extern "C"
 
 	void incrementCycleCount( void )
 	{
-		stime++;
+		stime += 3;
 		if ( stime > 1024000 / 2 )
 		{
 			snesSPC.end_frame( 1024000 / 2 );

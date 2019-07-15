@@ -330,6 +330,9 @@ private:
 	llvm::GlobalVariable m_registerY;
 	llvm::GlobalVariable m_registerP;
 
+	llvm::GlobalVariable m_DynamicLoad8;
+	llvm::GlobalVariable m_DynamicLoad16;
+
 	static const uint32_t WRAM_SIZE = 0x20000;
 	llvm::GlobalVariable m_wRam;
 

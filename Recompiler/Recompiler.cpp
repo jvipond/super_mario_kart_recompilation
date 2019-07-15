@@ -25,6 +25,8 @@ Recompiler::Recompiler()
 , m_registerX( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "X" )
 , m_registerY( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "Y" )
 , m_registerP( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "P" )
+, m_DynamicLoad8( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "DynamicLoad8" )
+, m_DynamicLoad16( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "DynamicLoad16" )
 , m_wRam( m_RecompilationModule, llvm::ArrayType::get( llvm::Type::getInt8Ty( m_LLVMContext ), WRAM_SIZE ), false, llvm::GlobalValue::ExternalLinkage, 0, "wRam" )
 , m_Rom( m_RecompilationModule, llvm::ArrayType::get( llvm::Type::getInt8Ty( m_LLVMContext ), ROM_SIZE ), false, llvm::GlobalValue::ExternalLinkage, 0, "rom" )
 , m_CurrentBasicBlock( nullptr )
@@ -51,6 +53,8 @@ Recompiler::~Recompiler()
 	m_registerP.removeFromParent();
 	m_wRam.removeFromParent();
 	m_Rom.removeFromParent();
+	m_DynamicLoad8.removeFromParent();
+	m_DynamicLoad16.removeFromParent();
 }
 
 void Recompiler::AddInstructionStringGlobalVariables()
@@ -5477,8 +5481,7 @@ llvm::Value* Recompiler::DynamicLoad16( llvm::Value* address )
 	auto high16 = m_IRBuilder.CreateZExt( high, llvm::Type::getInt16Ty( m_LLVMContext ), "" );
 	auto word = m_IRBuilder.CreateShl( high16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 8, false ) ), "" );
 
-	auto result = m_IRBuilder.CreateAlloca( llvm::Type::getInt16Ty( m_LLVMContext ) );
-
+	auto result = &m_DynamicLoad16;
 	m_IRBuilder.CreateStore( m_IRBuilder.CreateOr( word, low16, "" ), result );
 
 	return result;
@@ -5486,7 +5489,7 @@ llvm::Value* Recompiler::DynamicLoad16( llvm::Value* address )
 
 llvm::Value* Recompiler::DynamicLoad8( llvm::Value* address )
 {
-	auto result = m_IRBuilder.CreateAlloca( llvm::Type::getInt8Ty( m_LLVMContext ) );
+	auto result = &m_DynamicLoad8;
 	
 	auto bank = m_IRBuilder.CreateLShr( m_IRBuilder.CreateAnd( address, llvm::APInt( 32, static_cast<uint64_t>( 0xff0000 ), false ) ), 16 );
 	auto bank_offset = m_IRBuilder.CreateAnd( address, llvm::APInt( 32, static_cast<uint64_t>( 0xffff ), false ) );
