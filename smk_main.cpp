@@ -15,7 +15,7 @@
 #include <fstream>
 #include "spc/SNES_SPC.h"
 
-static constexpr bool compareToDebugLog = true;
+static constexpr bool compareToDebugLog = false;
 
 extern "C"
 {
