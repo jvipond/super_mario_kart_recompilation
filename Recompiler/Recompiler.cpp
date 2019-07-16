@@ -438,6 +438,16 @@ void Recompiler::GenerateCode()
 				m_Recompiler.PerformJsr( instruction.GetJumpLabelName(), instruction.GetOperand() );
 			}
 			break;
+			case 0xFC: // JSR absolute Idx X
+			{
+				m_Recompiler.PerformJsrAbsIdxX( instruction.GetOperand() );
+			}
+			break;
+			case 0x7C: // JMP absolute Idx X
+			{		
+				m_Recompiler.PerformJmpAbsIdxX( instruction.GetOperand() );
+			}
+			break;
 			case 0x22: // JSL long
 			{
 				m_Recompiler.PerformJsl( instruction.GetJumpLabelName(), instruction.GetOperand() );
@@ -1466,6 +1476,47 @@ void Recompiler::PerformJsr( const std::string& labelName, const uint32_t jumpAd
 		m_IRBuilder.CreateBr( m_PanicBlock );
 	}
 
+	m_CurrentBasicBlock = nullptr;
+}
+
+void Recompiler::PerformJsrAbsIdxX( const uint32_t jumpAddress )
+{
+	auto pcPlus2 = m_IRBuilder.CreateAdd( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 2, false ) ), "" );
+	PushWordToStack( pcPlus2 );
+
+	auto pb = m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerPB ), llvm::Type::getInt32Ty( m_LLVMContext ) ), 16 );
+	auto operandAddress = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( jumpAddress & 0xffff ), false ) );
+	auto ptrLowAddress = m_IRBuilder.CreateAdd( operandAddress, m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
+	auto ptrHighAddress = m_IRBuilder.CreateAdd( ptrLowAddress, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 1 ), false ) ) );
+	auto finalPtrLowAddress = m_IRBuilder.CreateOr( pb, ptrLowAddress );
+	auto finalPtrHighAddress = m_IRBuilder.CreateOr( pb, ptrHighAddress );
+	auto ptrLow = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( DynamicLoad8( finalPtrLowAddress ) ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto ptrHigh = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( DynamicLoad8( finalPtrHighAddress ) ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto finalJumpAddress = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( ptrHigh, 8 ), ptrLow );
+	auto newPC = m_IRBuilder.CreateTrunc( m_IRBuilder.CreateAnd( finalJumpAddress, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0xffff ), false ) ) ), llvm::Type::getInt16Ty( m_LLVMContext ) );
+	m_IRBuilder.CreateStore( newPC, &m_registerPC );
+	
+	PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+	m_IRBuilder.CreateBr( m_DynamicJumpTableBlock );
+	m_CurrentBasicBlock = nullptr;
+}
+
+void Recompiler::PerformJmpAbsIdxX( const uint32_t jumpAddress )
+{
+	auto pb = m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerPB ), llvm::Type::getInt32Ty( m_LLVMContext ) ), 16 );
+	auto operandAddress = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( jumpAddress & 0xffff ), false ) );
+	auto ptrLowAddress = m_IRBuilder.CreateAdd( operandAddress, m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
+	auto ptrHighAddress = m_IRBuilder.CreateAdd( ptrLowAddress, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 1 ), false ) ) );
+	auto finalPtrLowAddress = m_IRBuilder.CreateOr( pb, ptrLowAddress );
+	auto finalPtrHighAddress = m_IRBuilder.CreateOr( pb, ptrHighAddress );
+	auto ptrLow = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( DynamicLoad8( finalPtrLowAddress ) ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto ptrHigh = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( DynamicLoad8( finalPtrHighAddress ) ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto finalJumpAddress = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( ptrHigh, 8 ), ptrLow );
+	auto newPC = m_IRBuilder.CreateTrunc( m_IRBuilder.CreateAnd( finalJumpAddress, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0xffff ), false ) ) ), llvm::Type::getInt16Ty( m_LLVMContext ) );
+	m_IRBuilder.CreateStore( newPC, &m_registerPC );
+
+	PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+	m_IRBuilder.CreateBr( m_DynamicJumpTableBlock );
 	m_CurrentBasicBlock = nullptr;
 }
 

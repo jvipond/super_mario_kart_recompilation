@@ -78,6 +78,8 @@ public:
 	void PerformJmpAbs( const std::string& labelName, const uint32_t jumpAddress );
 	void PerformJmpLng( const std::string& labelName, const uint32_t jumpAddress );
 	void PerformJsr( const std::string& labelName, const uint32_t jumpAddress );
+	void PerformJsrAbsIdxX( const uint32_t jumpAddress );
+	void PerformJmpAbsIdxX( const uint32_t jumpAddress );
 	void PerformJsl( const std::string& labelName, const uint32_t jumpAddress );
 	void PerformBcc( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
 	void PerformBcs( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
