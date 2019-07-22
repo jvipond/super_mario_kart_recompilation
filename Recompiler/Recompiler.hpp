@@ -54,6 +54,8 @@ public:
 	void PerformAdcDir( const uint32_t address );
 	void PerformAdcLong( const uint32_t address );
 	void PerformSbcDir( const uint32_t address );
+	void PerformAdcLongIdxX( const uint32_t address );
+	void PerformSbcLongIdxX( const uint32_t address );
 	void PerformSbc16( llvm::Value* value );
 	void PerformSbc8( llvm::Value* value );
 	void PerformBit16Imm( llvm::Value* value );
@@ -243,7 +245,9 @@ public:
 	void PerformAndDir( const uint32_t address );
 	void PerformEorAbs( const uint32_t address );
 	void PerformEorDir( const uint32_t address );
+	void PerformEorDirIdxX( const uint32_t address );
 	void PerformOraAbs( const uint32_t address );
+	void PerformOraAbsIdxY( const uint32_t address );
 	void PerformOraDir( const uint32_t address );
 	void PerformCmpAbs( const uint32_t address );
 	void PerformCmpDir( const uint32_t address );
