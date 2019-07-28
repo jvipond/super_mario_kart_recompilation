@@ -51,8 +51,11 @@ public:
 	void PerformAdc16( llvm::Value* value );
 	void PerformAdc8( llvm::Value* value );
 	void PerformAdcAbs( const uint32_t address );
+	void PerformAdcAbsIdxX( const uint32_t address );
 	void PerformAdcDir( const uint32_t address );
 	void PerformAdcLong( const uint32_t address );
+	void PerformSbcAbs( const uint32_t address );
+	void PerformSbcAbsIdxX( const uint32_t address );
 	void PerformSbcDir( const uint32_t address );
 	void PerformAdcLongIdxX( const uint32_t address );
 	void PerformSbcLongIdxX( const uint32_t address );

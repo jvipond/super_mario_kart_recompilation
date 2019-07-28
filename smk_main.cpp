@@ -79,13 +79,14 @@ extern "C"
 	std::vector<Snes9xLogState> logState;
 	uint32_t currentLogStateIndex = 0;
 	static bool autoStep = false;
+	static bool render = false;
 
 	std::deque<std::tuple<uint32_t, const char*, RegisterState, uint32_t>> instructionTrace;
 	void updateInstructionOutput( const uint32_t pc, const char* instructionString )
 	{
 		RegisterState rs = { A, DB, DP, PB, PC, SP, X, Y, P };
 		
-		if ( instructionTrace.size() >= 32 )
+		if ( instructionTrace.size() >= 128 )
 		{
 			instructionTrace.pop_front();
 		}
@@ -98,21 +99,34 @@ extern "C"
 				const Snes9xLogState& ls = logState[ currentLogStateIndex ];
 				if ( !( rs.A == ls.A && rs.X == ls.X && rs.Y == ls.Y && rs.DP == ls.DP && rs.DB == ls.DB && rs.SP == ls.SP ) )
 				{
-					std::cout << "Log state does not match register state" << std::endl;
-					std::cout << "InstructionString = " << instructionString << " ls.String = " << ls.Text << std::endl;
-					std::cout << "rs.A = " << rs.A << " ls.A = " << ls.A << std::endl;
-					std::cout << "rs.X = " << rs.X << " ls.X = " << ls.X << std::endl;
-					std::cout << "rs.Y = " << rs.Y << " ls.Y = " << ls.Y << std::endl;
-					std::cout << "rs.DP = " << rs.DP << " ls.DP = " << ls.DP << std::endl;
-					std::cout << "rs.DB = " << rs.DB << " ls.DB = " << ls.DB << std::endl;
-					std::cout << "rs.SP = " << rs.SP << " ls.SP = " << ls.SP << std::endl;
+					if ( ls.Text.find( "CMP $2140" ) == std::string::npos && ls.Text.find( "BNE $FB" ) == std::string::npos )
+					{
+						std::cout << "Log state does not match register state" << std::endl;
+						std::cout << "InstructionString = " << instructionString << " ls.String = " << ls.Text << std::endl;
+						std::cout << "rs.A = " << rs.A << " ls.A = " << ls.A << std::endl;
+						std::cout << "rs.X = " << rs.X << " ls.X = " << ls.X << std::endl;
+						std::cout << "rs.Y = " << rs.Y << " ls.Y = " << ls.Y << std::endl;
+						std::cout << "rs.DP = " << rs.DP << " ls.DP = " << ls.DP << std::endl;
+						std::cout << "rs.DB = " << rs.DB << " ls.DB = " << ls.DB << std::endl;
+						std::cout << "rs.SP = " << rs.SP << " ls.SP = " << ls.SP << std::endl;
 
-					autoStep = false;
+						autoStep = false;
+						render = true;
+					}
 				}
 				assert( rs.A == ls.A && rs.X == ls.X && rs.Y == ls.Y && rs.DP == ls.DP && rs.DB == ls.DB && rs.SP == ls.SP );
+				
+				std::string is( instructionString );
+				auto pos = is.find_first_of( " " );
+				if ( pos != std::string::npos )
+				{
+					is = is.substr( 0, pos );
+				}
+				if ( ls.Text.find( is ) != std::string::npos )
+				{
+					currentLogStateIndex++;
+				}
 			}
-
-			currentLogStateIndex++;
 		}
 	}
 
@@ -126,7 +140,7 @@ extern "C"
 
 		bool scrollToBottom = true;
 		bool done = false;
-		while ( !done )
+		while ( render && !done )
 		{
 			SDL_Event event;
 			while ( SDL_PollEvent( &event ) )
@@ -263,7 +277,7 @@ extern "C"
 
 	void incrementCycleCount( void )
 	{
-		stime += 3;
+		stime += 1;
 		if ( stime > 1024000 / 2 )
 		{
 			snesSPC.end_frame( 1024000 / 2 );
