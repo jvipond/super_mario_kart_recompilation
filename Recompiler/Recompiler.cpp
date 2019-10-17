@@ -14,7 +14,6 @@ Recompiler::Recompiler()
 : m_IRBuilder( m_LLVMContext )
 , m_RecompilationModule( "recompilation", m_LLVMContext )
 , m_RomResetAddr( 0 )
-, m_DynamicJumpTableBlock( nullptr )
 , m_MainFunction( nullptr )
 , m_registerA( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "A" )
 , m_registerDB( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "DB" )
@@ -35,6 +34,8 @@ Recompiler::Recompiler()
 , m_PanicBlock( nullptr )
 , m_SPCWritePortFunction( nullptr )
 , m_SPCReadPortFunction( nullptr )
+, m_DSPWriteFunction( nullptr )
+, m_DSPReadFunction( nullptr )
 , m_ConvertRuntimeAddressFunction( nullptr )
 , m_UpdateInstructionOutput( nullptr )
 {
@@ -55,6 +56,16 @@ Recompiler::~Recompiler()
 	m_Rom.removeFromParent();
 	m_DynamicLoad8.removeFromParent();
 	m_DynamicLoad16.removeFromParent();
+}
+
+void Recompiler::CreateFunctions()
+{
+	auto voidFunctionType = llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), llvm::Type::getVoidTy( m_LLVMContext ), false );
+	for ( const auto& functionName : m_FunctionNames )
+	{
+		auto function = llvm::Function::Create( voidFunctionType, llvm::Function::ExternalLinkage, functionName, m_RecompilationModule );
+		m_Functions.emplace( functionName, function );
+	}
 }
 
 void Recompiler::AddInstructionStringGlobalVariables()
@@ -87,13 +98,36 @@ void Recompiler::InitialiseBasicBlocksFromLabelNames()
 {
 	struct InitialiseBasicBlocksFromLabelsVisitor
 	{
-		InitialiseBasicBlocksFromLabelsVisitor( Recompiler& recompiler, llvm::Function* function, llvm::LLVMContext& context ) : m_Recompiler( recompiler ), m_Function( function ), m_Context( context ) {}
+		InitialiseBasicBlocksFromLabelsVisitor( Recompiler& recompiler, llvm::LLVMContext& context ) : m_Recompiler( recompiler ), m_Context( context ) {}
 		
 		void operator()( const Label& label )
 		{
-			const std::string& labelName = label.GetName();
-			llvm::BasicBlock* basicBlock = llvm::BasicBlock::Create( m_Context, labelName, m_Function );
-			m_Recompiler.AddLabelNameToBasicBlock( labelName, basicBlock );
+			const auto& labelName = label.GetName();
+			const auto labelOffset = label.GetOffset();
+			const auto& functions = m_Recompiler.GetFunctions();
+			const auto& labelsToFunctions = m_Recompiler.GetLabelsToFunctions();
+			const auto& functionInfo = labelsToFunctions.find( labelOffset );
+			if ( functionInfo != labelsToFunctions.end() )
+			{
+				for ( const auto& functionEntry : functionInfo->second )
+				{
+					const auto functionFind = functions.find( functionEntry.first );
+					if ( functionFind != functions.end() )
+					{
+						auto function = functionFind->second;
+						assert( function );
+						const auto basicBlockName = functionEntry.first + "_" + labelName;
+						auto basicBlock = llvm::BasicBlock::Create( m_Context, basicBlockName, function );
+						m_Recompiler.AddLabelNameToBasicBlock( basicBlockName, basicBlock );
+
+						const bool entryPoint = functionEntry.second;
+						if ( entryPoint )
+						{
+							basicBlock->moveBefore( &(function->getEntryBlock()) );
+						}
+					}
+				}
+			}
 		}
 
 		void operator()( const Instruction& )
@@ -101,1114 +135,1102 @@ void Recompiler::InitialiseBasicBlocksFromLabelNames()
 		}
 
 		Recompiler& m_Recompiler;
-		llvm::Function* m_Function;
 		llvm::LLVMContext& m_Context;
 	};
 
-	InitialiseBasicBlocksFromLabelsVisitor initialiseBasicBlocksFromLabelsVisitor( *this, m_MainFunction, m_LLVMContext );
+	InitialiseBasicBlocksFromLabelsVisitor initialiseBasicBlocksFromLabelsVisitor( *this, m_LLVMContext );
 	for ( auto&& n : m_Program )
 	{
 		std::visit( initialiseBasicBlocksFromLabelsVisitor, n );
 	}
 }
 
-void Recompiler::AddDynamicJumpTableBlock()
+void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, const std::string& functionName )
 {
-	// add dynamic jump table block:
-	llvm::BasicBlock* dynamicJumpTableDefaultCaseBlock = llvm::BasicBlock::Create( m_LLVMContext, "DynamicJumpTableDefaultCaseBlock", m_MainFunction );
-	m_DynamicJumpTableBlock = llvm::BasicBlock::Create( m_LLVMContext, "DynamicJumpTable", m_MainFunction );
-	m_IRBuilder.SetInsertPoint( m_DynamicJumpTableBlock );
-
-	auto pc32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::Type::getInt32Ty( m_LLVMContext ), "" );
-	auto pb32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerPB, "" ), llvm::Type::getInt32Ty( m_LLVMContext ), "" );
-	auto pb32Shifted = m_IRBuilder.CreateShl( pb32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 16 ), false ) ), "" );
-	auto finalRuntimePC = m_IRBuilder.CreateOr( pc32, pb32Shifted, "" );
-
-	llvm::Value* args[] = { finalRuntimePC };
-	auto offset = m_IRBuilder.CreateCall( m_ConvertRuntimeAddressFunction, args );
-	auto sw = m_IRBuilder.CreateSwitch( offset, dynamicJumpTableDefaultCaseBlock, static_cast<unsigned int>( m_LabelNamesToOffsets.size() ) );
-	SelectBlock( dynamicJumpTableDefaultCaseBlock );
-	m_IRBuilder.CreateRetVoid();
-	for ( auto&& entry : m_LabelNamesToOffsets )
+	PerformUpdateInstructionOutput( instruction.GetOffset(), instruction.GetInstructionString() );
+	auto nextPC = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+	switch ( instruction.GetOpcode() )
 	{
-		auto addressValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( entry.second ), false ) );
-		if ( sw )
+	case 0x09: // ORA immediate
+	{
+		if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
 		{
-			sw->addCase( addressValue, m_LabelNamesToBasicBlocks[ entry.first ] );
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformOra16( operandValue );
 		}
+		else
+		{
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformOra8( operandValue );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
 	}
-	SelectBlock( nullptr );
+	break;
+	case 0x29: // AND immediate
+	{
+		if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+		{
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformAnd16( operandValue );
+		}
+		else
+		{
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformAnd8( operandValue );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x49: // EOR immediate
+	{
+		if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+		{
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformEor16( operandValue );
+		}
+		else
+		{
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformEor8( operandValue );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xA9: // LDA immediate
+	{
+		if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+		{
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformLda16( operandValue );
+		}
+		else
+		{
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformLda8( operandValue );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xA2: // LDX immediate
+	{
+		if ( instruction.GetIndexMode() == SIXTEEN_BIT )
+		{
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformLdx16( operandValue );
+		}
+		else
+		{
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformLdx8( operandValue );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xA0: // LDY immediate
+	{
+		if ( instruction.GetIndexMode() == SIXTEEN_BIT )
+		{
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformLdy16( operandValue );
+		}
+		else
+		{
+			auto operandValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformLdy8( operandValue );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xC9: // CMP immediate
+	{
+		if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+		{
+			auto lValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			auto rValue = CreateLoadA16();
+			PerformCmp16( lValue, rValue );
+		}
+		else
+		{
+			auto lValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			auto rValue = CreateLoadA8();
+			PerformCmp8( lValue, rValue );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xE0: // CPX immediate
+	{
+		if ( instruction.GetIndexMode() == SIXTEEN_BIT )
+		{
+			auto lValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			auto rValue = CreateLoadX16();
+			PerformCmp16( lValue, rValue );
+		}
+		else
+		{
+			auto lValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			auto rValue = CreateLoadX8();
+			PerformCmp8( lValue, rValue );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xC0: // CPY immediate
+	{
+		if ( instruction.GetIndexMode() == SIXTEEN_BIT )
+		{
+			auto lValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			auto rValue = CreateLoadY16();
+			PerformCmp16( lValue, rValue );
+		}
+		else
+		{
+			auto lValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			auto rValue = CreateLoadY8();
+			PerformCmp8( lValue, rValue );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x18: // CLC implied
+	{
+		ClearCarry();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x38: // SEC implied
+	{
+		SetCarry();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xD8: // CLD implied
+	{
+		ClearDecimal();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x58: // CLI implied
+	{
+		ClearInterrupt();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xB8: // CLV implied
+	{
+		ClearOverflow();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xF8: // SED implied
+	{
+		SetDecimal();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x78: // SEI implied
+	{
+		SetInterrupt();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xEB: // XBA
+	{
+		PerformXba();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x1B: // TCS
+	{
+		PerformTcs();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x5B: // TCD
+	{
+		PerformTcd();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x7B: // TDC
+	{
+		PerformTdc();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x3B: // TSC
+	{
+		PerformTsc();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x60: // RTS
+	{
+		PerformRts();
+	}
+	break;
+	case 0x6B: // RTL
+	{
+		PerformRtl();
+	}
+	break;
+	case 0x40: // RTI
+	{
+		PerformRti();
+	}
+	break;
+	case 0x80: // BRA
+	{
+		auto pc = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
+		PerformBra( instruction.GetJumpLabelName(), functionName, pc );
+	}
+	break;
+	case 0x4C: // JMP abs
+	{
+		PerformJmpAbs( instruction.GetJumpLabelName(), functionName, instruction.GetOperand() );
+	}
+	break;
+	case 0x5C: // JMP long
+	{
+		PerformJmpLng( instruction.GetJumpLabelName(),functionName, instruction.GetOperand() );
+	}
+	break;
+	case 0xF4: // PEA
+	{
+		auto value = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
+		PerformPea( value );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xC2: // REP
+	{
+		auto value = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
+		PerformRep( value );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xE2: // SEP
+	{
+		auto value = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
+		PerformSep( value );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x20: // JSR absolute
+	{
+		PerformJsr( instruction.GetOffset(), instruction.GetOperand() );
+	}
+	break;
+	case 0xFC: // JSR absolute Idx X
+	{
+		PerformJsrAbsIdxX( instruction.GetOffset(), instruction.GetOperand() );
+	}
+	break;
+	case 0x7C: // JMP absolute Idx X
+	{
+		PerformJmpAbsIdxX( instruction.GetOffset(), functionName, instruction.GetOperand() );
+	}
+	break;
+	case 0x22: // JSL long
+	{
+		PerformJsl( instruction.GetOffset(), instruction.GetOperand() );
+	}
+	break;
+	case 0x90: // BCC
+	{
+		auto pcBranchTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
+		auto pcBranchNotTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+		PerformBcc( instruction.GetJumpLabelName(), functionName, pcBranchTaken, pcBranchNotTaken );
+	}
+	break;
+	case 0xB0: // BCS
+	{
+		auto pcBranchTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
+		auto pcBranchNotTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+		PerformBcs( instruction.GetJumpLabelName(), functionName, pcBranchTaken, pcBranchNotTaken );
+	}
+	break;
+	case 0xF0: // BEQ
+	{
+		auto pcBranchTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
+		auto pcBranchNotTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+		PerformBeq( instruction.GetJumpLabelName(), functionName, pcBranchTaken, pcBranchNotTaken );
+	}
+	break;
+	case 0xD0: // BNE
+	{
+		auto pcBranchTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
+		auto pcBranchNotTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+		PerformBne( instruction.GetJumpLabelName(), functionName, pcBranchTaken, pcBranchNotTaken );
+	}
+	break;
+	case 0x30: // BMI
+	{
+		auto pcBranchTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
+		auto pcBranchNotTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+		PerformBmi( instruction.GetJumpLabelName(), functionName, pcBranchTaken, pcBranchNotTaken );
+	}
+	break;
+	case 0x10: // BPL
+	{
+		auto pcBranchTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
+		auto pcBranchNotTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+		PerformBpl( instruction.GetJumpLabelName(), functionName, pcBranchTaken, pcBranchNotTaken );
+	}
+	break;
+	case 0x50: // BVC
+	{
+		auto pcBranchTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
+		auto pcBranchNotTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+		PerformBvc( instruction.GetJumpLabelName(), functionName, pcBranchTaken, pcBranchNotTaken );
+	}
+	break;
+	case 0x70: // BVS
+	{
+		auto pcBranchTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
+		auto pcBranchNotTaken = ComputeNewPC( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
+		PerformBvs( instruction.GetJumpLabelName(), functionName, pcBranchTaken, pcBranchNotTaken );
+	}
+	break;
+	case 0x48: // PHA
+	{
+		PerformPha();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xDA: // PHX
+	{
+		PerformPhx();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x5A: // PHY
+	{
+		PerformPhy();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x8B: // PHB
+	{
+		PerformPhb();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x0B: // PHD
+	{
+		PerformPhd();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x4B: // PHK
+	{
+		PerformPhk();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x08: // PHP
+	{
+		PerformPhp();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x68: // PLA
+	{
+		PerformPla();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xFA: // PLX
+	{
+		PerformPlx();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x7A: // PLY
+	{
+		PerformPly();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xAB: // PLB
+	{
+		PerformPlb();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x2B: // PLD
+	{
+		PerformPld();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x28: // PLP
+	{
+		PerformPlp();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x3A: // DEC accumulator
+	{
+		PerformDec();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xCE: // DEC Abs
+	{
+		PerformDecAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xC6: // DEC Dir
+	{
+		PerformDecDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x1A: // INC accumulator
+	{
+		PerformInc();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xE6: // INC Dir
+	{
+		PerformIncDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xEE: // INC Abs
+	{
+		PerformIncAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xCA: // DEX accumulator
+	{
+		PerformDex();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xE8: // INX accumulator
+	{
+		PerformInx();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x88: // DEY accumulator
+	{
+		PerformDey();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xC8: // INY accumulator
+	{
+		PerformIny();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x0A: // ASL accumulator
+	{
+		PerformAsl();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x0E: // ASL Abs
+	{
+		PerformAslAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x06: // ASL Dir
+	{
+		PerformAslDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x4A: // LSR accumulator
+	{
+		PerformLsr();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x4E: // LSR Abs
+	{
+		PerformLsrAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x46: // LSR Dir
+	{
+		PerformLsrDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x2A: // ROL accumulator
+	{
+		PerformRol();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x2E: // ROL Abs
+	{
+		PerformRolAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x26: // ROL Dir
+	{
+		PerformRolDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x6A: // ROR accumulator
+	{
+		PerformRor();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x6E: // ROR Abs
+	{
+		PerformRorAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x66: // ROR Abs
+	{
+		PerformRorDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xAA: // TAX
+	{
+		PerformTax();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xA8: // TAY
+	{
+		PerformTay();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xBA: // TSX
+	{
+		PerformTsx();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x8A: // TXA
+	{
+		PerformTxa();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x9A: // TXS
+	{
+		PerformTxs();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x9B: // TXY
+	{
+		PerformTxy();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x98: // TYA
+	{
+		PerformTya();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xBB: // TYX
+	{
+		PerformTyx();
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x69: // ADC
+	{
+		if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+		{
+			auto data = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformAdc16( data );
+		}
+		else
+		{
+			auto data = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformAdc8( data );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xE9: // SBC
+	{
+		if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+		{
+			auto data = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformSbc16( data );
+		}
+		else
+		{
+			auto data = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformSbc8( data );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x89: // BIT
+		if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
+		{
+			auto data = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformBit16Imm( data );
+		}
+		else
+		{
+			auto data = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
+			PerformBit8Imm( data );
+		}
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+		break;
+	case 0xAF: // LDA Long
+	{
+		PerformLdaLong( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x8F: // STA Long
+	{
+		PerformStaLong( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xAD: // LDA Abs
+	{
+		PerformLdaAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x8D: // STA Abs
+	{
+		PerformStaAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x8E: // STX Abs
+	{
+		PerformStxAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x8C: // STY Abs
+	{
+		PerformStyAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x9C: // STZ Abs
+	{
+		PerformStzAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xAE: // LDX Abs
+	{
+		PerformLdxAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xAC: // LDY Abs
+	{
+		PerformLdyAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x1C: // TRB Abs
+	{
+		PerformTrbAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x14: // TRB Dir
+	{
+		PerformTrbDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x0C: // TSB Abs
+	{
+		PerformTsbAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x04: // TSB Dir
+	{
+		PerformTsbDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x2C: // BIT Abs
+	{
+		PerformBitAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x2D: // AND Abs
+	{
+		PerformAndAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x25: // AND Dir
+	{
+		PerformAndDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x4D: // EOR Abs
+	{
+		PerformEorAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x55: // EOR Dir IdxX
+	{
+		PerformEorDirIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x45: // EOR Dir
+	{
+		PerformEorDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x0D: // ORA Abs
+	{
+		PerformOraAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x05: // ORA Dir
+	{
+		PerformOraDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x19: // ORA Abs IdxY
+	{
+		PerformOraAbsIdxY( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xCD: // CMP Abs
+	{
+		PerformCmpAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xC5: // CMP Dir
+	{
+		PerformCmpDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xEC: // CPX Abs
+	{
+		PerformCpxAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xE4: // CPX Dir
+	{
+		PerformCpxDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xCC: // CPY Abs
+	{
+		PerformCpyAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xC4: // CPY Dir
+	{
+		PerformCpyDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xA5: // LDA Dir
+	{
+		PerformLdaDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xA6: // LDX Dir
+	{
+		PerformLdxDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xA4: // LDY Dir
+	{
+		PerformLdyDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x85: // STA dir
+	{
+		PerformStaDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x86: // STX dir
+	{
+		PerformStxDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x84: // STY dir
+	{
+		PerformStyDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x64: // STZ dir
+	{
+		PerformStzDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x54: // MVN
+	{
+		PerformMvn( instruction.GetOperand(), instruction.GetOffset(), instruction.GetInstructionString() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x44: // MVP
+	{
+		PerformMvn( instruction.GetOperand(), instruction.GetOffset(), instruction.GetInstructionString() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x24: // BIT Dir
+	{
+		PerformBitDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xB5: // LDA DirIdxX
+	{
+		PerformLdaDirIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xB4: // LDY DirIdxX
+	{
+		PerformLdyDirIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x95: // STA DirIdxX
+	{
+		PerformStaDirIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x94: // STY DirIdxX
+	{
+		PerformStyDirIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x74: // STZ DirIdxX
+	{
+		PerformStzDirIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xB6: // LDX DirIdxY
+	{
+		PerformLdxDirIdxY( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x96: // STX DirIdxY
+	{
+		PerformStxDirIdxY( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xBF: // LDA LongIdxX
+	{
+		PerformLdaLongIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x9F: // STA LongIdxX
+	{
+		PerformStaLongIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xBD: // LDA AbsIdxX
+	{
+		PerformLdaAbsIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xB9: // LDX AbsIdxY
+	{
+		PerformLdaAbsIdxY( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xBC: // LDY AbsIdxX
+	{
+		PerformLdyAbsIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x9D: // STA AbsIdxX
+	{
+		PerformStaAbsIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x9E: // STZ AbsIdxX
+	{
+		PerformStzAbsIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xBE: // LDX AbsIdxY
+	{
+		PerformLdxAbsIdxY( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x99: // STA AbsIdxY
+	{
+		PerformStaAbsIdxY( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x65: // ADC Dir
+	{
+		PerformAdcDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xF5: // SBC Dir Idx X
+	{
+		PerformSbcDirIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x6D: // ADC Abs
+	{
+		PerformAdcAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x7D: // ADC Abs Idx X
+	{
+		PerformAdcAbsIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xED: // SBC Abs
+	{
+		PerformSbcAbs( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xFD: // SBC Abs Idx X
+	{
+		PerformSbcAbsIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x6F: // ADC Long
+	{
+		PerformAdcLong( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0x7F: // ADC Long Idx X
+	{
+		PerformAdcLongIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xFF: // SBC Long Idx X
+	{
+		PerformSbcLongIdxX( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xE5: // SBC Dir
+	{
+		PerformSbcDir( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xB7: // LDA [DIRECT],Y
+	{
+		PerformLdaDirIndLngIdxY( instruction.GetOperand() );
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	case 0xEA: // NOP
+	{
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
+	}
+	break;
+	default:
+		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC, false );
+		break;
+	}
 }
 
 void Recompiler::GenerateCode()
 {
-	// Visit all program nodes for codegen:
-	struct CodeGenerationVisitor
+	const auto numProgramNodes = m_Program.size();
+	for ( size_t nodeIndex = 0; nodeIndex < numProgramNodes; nodeIndex++ )
 	{
-		CodeGenerationVisitor( Recompiler& recompiler, llvm::Function* function, llvm::LLVMContext& context ) : m_Recompiler( recompiler ), m_Function( function ), m_Context( context ) {}
-		
-		void operator()( const Label& label )
+		const auto& node = m_Program[ nodeIndex ];
+		if ( std::holds_alternative<Label>( node ) )
 		{
-			auto labelNamesToBasicBlocks = m_Recompiler.GetLabelNamesToBasicBlocks();
-			auto search = labelNamesToBasicBlocks.find( label.GetName() );
-			assert( search != labelNamesToBasicBlocks.end() );
-			
-			if ( m_Recompiler.GetCurrentBasicBlock() != nullptr )
+			const auto& label = std::get<Label>( node );
+			const auto& labelName = label.GetName();
+			const auto labelOffset = label.GetOffset();
+			const auto& functionInfo = m_LabelsToFunctions.find( labelOffset );
+			if ( functionInfo != m_LabelsToFunctions.end() )
 			{
-				m_Recompiler.CreateBranch( search->second );
-			}
+				for ( const auto& functionEntry : functionInfo->second )
+				{
+					const auto basicBlockName = functionEntry.first + "_" + labelName;
+					auto search = m_LabelNamesToBasicBlocks.find( basicBlockName );
+					assert( search != m_LabelNamesToBasicBlocks.end() );
 
-			m_Recompiler.SetCurrentBasicBlock( search->second );
-			m_Recompiler.SetInsertPoint( search->second );
-		}
+					auto basicBlock = search->second;
 
-		void operator()( const Instruction& instruction )
-		{
-			m_Recompiler.PerformUpdateInstructionOutput( instruction.GetOffset(), instruction.GetInstructionString() );
-			auto nextPC = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
-			switch ( instruction.GetOpcode() )
-			{
-			case 0x09: // ORA immediate
-			{
-				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformOra16( operandValue );
+					m_CurrentBasicBlock = basicBlock;
+					m_IRBuilder.SetInsertPoint( basicBlock );
+
+					auto codeGenIndex = nodeIndex + 1;
+					while ( std::holds_alternative<Instruction>( m_Program[ codeGenIndex ] ) )
+					{
+						assert( std::holds_alternative<Instruction>( m_Program[ codeGenIndex ] ) );
+						const auto& instruction = std::get<Instruction>( m_Program[ codeGenIndex ] );
+						GenerateCodeForInstruction( instruction, functionEntry.first );
+
+						codeGenIndex++;
+					}
 				}
-				else
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformOra8( operandValue );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x29: // AND immediate
-			{
-				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformAnd16( operandValue );
-				}
-				else
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformAnd8( operandValue );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x49: // EOR immediate
-			{
-				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformEor16( operandValue );
-				}
-				else
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformEor8( operandValue );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xA9: // LDA immediate
-			{
-				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformLda16( operandValue );
-				}
-				else
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformLda8( operandValue );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xA2: // LDX immediate
-			{
-				if ( instruction.GetIndexMode() == SIXTEEN_BIT )
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformLdx16( operandValue );
-				}
-				else
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformLdx8( operandValue );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xA0: // LDY immediate
-			{
-				if ( instruction.GetIndexMode() == SIXTEEN_BIT )
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformLdy16( operandValue );
-				}
-				else
-				{
-					llvm::Value* operandValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformLdy8( operandValue );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xC9: // CMP immediate
-			{
-				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
-				{
-					llvm::Value* lValue = m_Recompiler.CreateLoadA16();
-					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformCmp16( lValue, rValue );
-				}
-				else
-				{
-					llvm::Value* lValue = m_Recompiler.CreateLoadA8();
-					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformCmp8( lValue, rValue );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xE0: // CPX immediate
-			{
-				if ( instruction.GetIndexMode() == SIXTEEN_BIT )
-				{
-					llvm::Value* lValue = m_Recompiler.CreateLoadX16();
-					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformCmp16( lValue, rValue );
-				}
-				else
-				{
-					llvm::Value* lValue = m_Recompiler.CreateLoadX8();
-					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformCmp8( lValue, rValue );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xC0: // CPY immediate
-			{
-				if ( instruction.GetIndexMode() == SIXTEEN_BIT )
-				{
-					llvm::Value* lValue = m_Recompiler.CreateLoadY16();
-					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformCmp16( lValue, rValue );
-				}
-				else
-				{
-					llvm::Value* lValue = m_Recompiler.CreateLoadY8();
-					llvm::Value* rValue = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformCmp8( lValue, rValue );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x18: // CLC implied
-			{
-				m_Recompiler.ClearCarry();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x38: // SEC implied
-			{
-				m_Recompiler.SetCarry();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xD8: // CLD implied
-			{
-				m_Recompiler.ClearDecimal();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x58: // CLI implied
-			{
-				m_Recompiler.ClearInterrupt();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xB8: // CLV implied
-			{
-				m_Recompiler.ClearOverflow();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xF8: // SED implied
-			{
-				m_Recompiler.SetDecimal();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x78: // SEI implied
-			{
-				m_Recompiler.SetInterrupt();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xEB: // XBA
-			{
-				m_Recompiler.PerformXba();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x1B: // TCS
-			{
-				m_Recompiler.PerformTcs();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x5B: // TCD
-			{
-				m_Recompiler.PerformTcd();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x7B: // TDC
-			{
-				m_Recompiler.PerformTdc();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x3B: // TSC
-			{
-				m_Recompiler.PerformTsc();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x60: // RTS
-			{
-				m_Recompiler.PerformRts();
-			}
-			break;
-			case 0x6B: // RTL
-			{
-				m_Recompiler.PerformRtl();
-			}
-			break;
-			case 0x40: // RTI
-			{
-				m_Recompiler.PerformRti();
-			}
-			break;
-			case 0x80: // BRA
-			{
-				auto pc = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
-				m_Recompiler.PerformBra( instruction.GetJumpLabelName(), pc );
-			}
-			break;
-			case 0x4C: // JMP abs
-			{
-				m_Recompiler.PerformJmpAbs( instruction.GetJumpLabelName(), instruction.GetOperand() );
-			}
-			break;
-			case 0x5C: // JMP long
-			{		
-				m_Recompiler.PerformJmpLng( instruction.GetJumpLabelName(), instruction.GetOperand() );
-			}
-			break;
-			case 0xF4: // PEA
-			{
-				llvm::Value* value = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
-				m_Recompiler.PerformPea( value );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xC2: // REP
-			{
-				llvm::Value* value = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
-				m_Recompiler.PerformRep( value );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xE2: // SEP
-			{
-				llvm::Value* value = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), false ) );
-				m_Recompiler.PerformSep( value );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x20: // JSR absolute
-			{
-				m_Recompiler.PerformJsr( instruction.GetJumpLabelName(), instruction.GetOperand() );
-			}
-			break;
-			case 0xFC: // JSR absolute Idx X
-			{
-				m_Recompiler.PerformJsrAbsIdxX( instruction.GetOperand() );
-			}
-			break;
-			case 0x7C: // JMP absolute Idx X
-			{		
-				m_Recompiler.PerformJmpAbsIdxX( instruction.GetOperand() );
-			}
-			break;
-			case 0x22: // JSL long
-			{
-				m_Recompiler.PerformJsl( instruction.GetJumpLabelName(), instruction.GetOperand() );
-			}
-			break;
-			case 0x90: // BCC
-			{
-				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
-				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
-				m_Recompiler.PerformBcc( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
-			}
-			break;
-			case 0xB0: // BCS
-			{
-				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
-				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
-				m_Recompiler.PerformBcs( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
-			}
-			break;
-			case 0xF0: // BEQ
-			{
-				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
-				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
-				m_Recompiler.PerformBeq( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
-			}
-			break;
-			case 0xD0: // BNE
-			{
-				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
-				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
-				m_Recompiler.PerformBne( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
-			}
-			break;
-			case 0x30: // BMI
-			{
-				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
-				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
-				m_Recompiler.PerformBmi( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
-			}
-			break;
-			case 0x10: // BPL
-			{
-				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
-				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
-				m_Recompiler.PerformBpl( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
-			}
-			break;
-			case 0x50: // BVC
-			{
-				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
-				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
-				m_Recompiler.PerformBvc( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
-			}
-			break;
-			case 0x70: // BVS
-			{
-				auto pcBranchTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( static_cast<int8_t>( instruction.GetTotalSize() ) + static_cast<int8_t>( instruction.GetOperand() ) ), true ) ) );
-				auto pcBranchNotTaken = m_Recompiler.ComputeNewPC( llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetTotalSize() ), false ) ) );
-				m_Recompiler.PerformBvs( instruction.GetJumpLabelName(), pcBranchTaken, pcBranchNotTaken );
-			}
-			break;
-			case 0x48: // PHA
-			{
-				m_Recompiler.PerformPha();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xDA: // PHX
-			{
-				m_Recompiler.PerformPhx();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x5A: // PHY
-			{
-				m_Recompiler.PerformPhy();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x8B: // PHB
-			{
-				m_Recompiler.PerformPhb();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x0B: // PHD
-			{
-				m_Recompiler.PerformPhd();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x4B: // PHK
-			{
-				m_Recompiler.PerformPhk();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x08: // PHP
-			{
-				m_Recompiler.PerformPhp();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x68: // PLA
-			{
-				m_Recompiler.PerformPla();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xFA: // PLX
-			{
-				m_Recompiler.PerformPlx();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x7A: // PLY
-			{
-				m_Recompiler.PerformPly();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xAB: // PLB
-			{
-				m_Recompiler.PerformPlb();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x2B: // PLD
-			{
-				m_Recompiler.PerformPld();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x28: // PLP
-			{
-				m_Recompiler.PerformPlp();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x3A: // DEC accumulator
-			{
-				m_Recompiler.PerformDec();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xCE: // DEC Abs
-			{
-				m_Recompiler.PerformDecAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xC6: // DEC Dir
-			{
-				m_Recompiler.PerformDecDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x1A: // INC accumulator
-			{
-				m_Recompiler.PerformInc();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xE6: // INC Dir
-			{
-				m_Recompiler.PerformIncDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xEE: // INC Abs
-			{
-				m_Recompiler.PerformIncAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xCA: // DEX accumulator
-			{
-				m_Recompiler.PerformDex();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xE8: // INX accumulator
-			{
-				m_Recompiler.PerformInx();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x88: // DEY accumulator
-			{
-				m_Recompiler.PerformDey();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xC8: // INY accumulator
-			{
-				m_Recompiler.PerformIny();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x0A: // ASL accumulator
-			{
-				m_Recompiler.PerformAsl();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x0E: // ASL Abs
-			{
-				m_Recompiler.PerformAslAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x06: // ASL Dir
-			{
-				m_Recompiler.PerformAslDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x4A: // LSR accumulator
-			{
-				m_Recompiler.PerformLsr();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x4E: // LSR Abs
-			{
-				m_Recompiler.PerformLsrAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x46: // LSR Dir
-			{
-				m_Recompiler.PerformLsrDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x2A: // ROL accumulator
-			{
-				m_Recompiler.PerformRol();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x2E: // ROL Abs
-			{
-				m_Recompiler.PerformRolAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x26: // ROL Dir
-			{
-				m_Recompiler.PerformRolDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x6A: // ROR accumulator
-			{
-				m_Recompiler.PerformRor();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x6E: // ROR Abs
-			{
-				m_Recompiler.PerformRorAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x66: // ROR Abs
-			{
-				m_Recompiler.PerformRorDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xAA: // TAX
-			{
-				m_Recompiler.PerformTax();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xA8: // TAY
-			{
-				m_Recompiler.PerformTay();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xBA: // TSX
-			{
-				m_Recompiler.PerformTsx();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x8A: // TXA
-			{
-				m_Recompiler.PerformTxa();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x9A: // TXS
-			{
-				m_Recompiler.PerformTxs();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x9B: // TXY
-			{
-				m_Recompiler.PerformTxy();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x98: // TYA
-			{
-				m_Recompiler.PerformTya();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xBB: // TYX
-			{
-				m_Recompiler.PerformTyx();
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x69: // ADC
-			{
-				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
-				{
-					auto data = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformAdc16( data );
-				}
-				else
-				{
-					auto data = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformAdc8( data );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xE9: // SBC
-			{
-				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
-				{
-					auto data = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformSbc16( data );
-				}
-				else
-				{
-					auto data = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformSbc8( data );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x89: // BIT
-				if ( instruction.GetMemoryMode() == SIXTEEN_BIT )
-				{
-					auto data = llvm::ConstantInt::get( m_Context, llvm::APInt( 16, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformBit16Imm( data );
-				}
-				else
-				{
-					auto data = llvm::ConstantInt::get( m_Context, llvm::APInt( 8, static_cast<uint64_t>( instruction.GetOperand() ), true ) );
-					m_Recompiler.PerformBit8Imm( data );
-				}
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-				break;
-			case 0xAF: // LDA Long
-			{
-				m_Recompiler.PerformLdaLong( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x8F: // STA Long
-			{
-				m_Recompiler.PerformStaLong( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xAD: // LDA Abs
-			{
-				m_Recompiler.PerformLdaAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x8D: // STA Abs
-			{
-				m_Recompiler.PerformStaAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x8E: // STX Abs
-			{
-				m_Recompiler.PerformStxAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x8C: // STY Abs
-			{
-				m_Recompiler.PerformStyAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x9C: // STZ Abs
-			{
-				m_Recompiler.PerformStzAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xAE: // LDX Abs
-			{
-				m_Recompiler.PerformLdxAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xAC: // LDY Abs
-			{
-				m_Recompiler.PerformLdyAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x1C: // TRB Abs
-			{
-				m_Recompiler.PerformTrbAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x14: // TRB Dir
-			{
-				m_Recompiler.PerformTrbDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x0C: // TSB Abs
-			{
-				m_Recompiler.PerformTsbAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x04: // TSB Dir
-			{
-				m_Recompiler.PerformTsbDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x2C: // BIT Abs
-			{
-				m_Recompiler.PerformBitAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x2D: // AND Abs
-			{
-				m_Recompiler.PerformAndAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x25: // AND Dir
-			{
-				m_Recompiler.PerformAndDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x4D: // EOR Abs
-			{
-				m_Recompiler.PerformEorAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x55: // EOR Dir IdxX
-			{
-				m_Recompiler.PerformEorDirIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x45: // EOR Dir
-			{
-				m_Recompiler.PerformEorDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x0D: // ORA Abs
-			{
-				m_Recompiler.PerformOraAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x05: // ORA Dir
-			{
-				m_Recompiler.PerformOraDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x19: // ORA Abs IdxY
-			{
-				m_Recompiler.PerformOraAbsIdxY( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xCD: // CMP Abs
-			{
-				m_Recompiler.PerformCmpAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xC5: // CMP Dir
-			{
-				m_Recompiler.PerformCmpDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xEC: // CPX Abs
-			{
-				m_Recompiler.PerformCpxAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xE4: // CPX Dir
-			{
-				m_Recompiler.PerformCpxDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xCC: // CPY Abs
-			{
-				m_Recompiler.PerformCpyAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xC4: // CPY Dir
-			{
-				m_Recompiler.PerformCpyDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xA5: // LDA Dir
-			{
-				m_Recompiler.PerformLdaDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xA6: // LDX Dir
-			{
-				m_Recompiler.PerformLdxDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xA4: // LDY Dir
-			{
-				m_Recompiler.PerformLdyDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x85: // STA dir
-			{
-				m_Recompiler.PerformStaDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x86: // STX dir
-			{
-				m_Recompiler.PerformStxDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x84: // STY dir
-			{
-				m_Recompiler.PerformStyDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x64: // STZ dir
-			{
-				m_Recompiler.PerformStzDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x54: // MVN
-			{
-				m_Recompiler.PerformMvn( instruction.GetOperand(), instruction.GetOffset(), instruction.GetInstructionString() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x44: // MVP
-			{
-				m_Recompiler.PerformMvn( instruction.GetOperand(), instruction.GetOffset(), instruction.GetInstructionString() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x24: // BIT Dir
-			{
-				m_Recompiler.PerformBitDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xB5: // LDA DirIdxX
-			{
-				m_Recompiler.PerformLdaDirIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xB4: // LDY DirIdxX
-			{
-				m_Recompiler.PerformLdyDirIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x95: // STA DirIdxX
-			{	
-				m_Recompiler.PerformStaDirIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x94: // STY DirIdxX
-			{
-				m_Recompiler.PerformStyDirIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x74: // STZ DirIdxX
-			{
-				m_Recompiler.PerformStzDirIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xB6: // LDX DirIdxY
-			{
-				m_Recompiler.PerformLdxDirIdxY( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x96: // STX DirIdxY
-			{
-				m_Recompiler.PerformStxDirIdxY( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xBF: // LDA LongIdxX
-			{
-				m_Recompiler.PerformLdaLongIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x9F: // STA LongIdxX
-			{
-				m_Recompiler.PerformStaLongIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xBD: // LDA AbsIdxX
-			{
-				m_Recompiler.PerformLdaAbsIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xB9: // LDX AbsIdxY
-			{
-				m_Recompiler.PerformLdaAbsIdxY( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xBC: // LDY AbsIdxX
-			{
-				m_Recompiler.PerformLdyAbsIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x9D: // STA AbsIdxX
-			{
-				m_Recompiler.PerformStaAbsIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x9E: // STZ AbsIdxX
-			{
-				m_Recompiler.PerformStzAbsIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xBE: // LDX AbsIdxY
-			{
-				m_Recompiler.PerformLdxAbsIdxY( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x99: // STA AbsIdxY
-			{
-				m_Recompiler.PerformStaAbsIdxY( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x65: // ADC Dir
-			{
-				m_Recompiler.PerformAdcDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x6D: // ADC Abs
-			{
-				m_Recompiler.PerformAdcAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x7D: // ADC Abs Idx X
-			{
-				m_Recompiler.PerformAdcAbsIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xED: // SBC Abs
-			{
-				m_Recompiler.PerformSbcAbs( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xFD: // SBC Abs Idx X
-			{
-				m_Recompiler.PerformSbcAbsIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x6F: // ADC Long
-			{
-				m_Recompiler.PerformAdcLong( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0x7F: // ADC Long Idx X
-			{
-				m_Recompiler.PerformAdcLongIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xFF: // SBC Long Idx X
-			{
-				m_Recompiler.PerformSbcLongIdxX( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xE5: // SBC Dir
-			{
-				m_Recompiler.PerformSbcDir( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			case 0xB7: // LDA [DIRECT],Y
-			{
-				m_Recompiler.PerformLdaDirIndLngIdxY( instruction.GetOperand() );
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC );
-			}
-			break;
-			default:
-				m_Recompiler.PerformRomCycle( llvm::ConstantInt::get( m_Context, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), nextPC, false );
-				break;
 			}
 		}
-
-		Recompiler& m_Recompiler;
-		llvm::Function* m_Function;
-		llvm::LLVMContext& m_Context;
-	};
-
-	CodeGenerationVisitor codeGenerationVisitor( *this, m_MainFunction, m_LLVMContext );
-	for ( auto&& n : m_Program )
-	{
-		std::visit( codeGenerationVisitor, n );
 	}
 }
 
@@ -1221,13 +1243,17 @@ void Recompiler::Recompile()
 	m_ConvertRuntimeAddressFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext ), false ), llvm::Function::ExternalLinkage, "convertRuntimeAddressToOffset", m_RecompilationModule );
 	m_UpdateInstructionOutput = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt8PtrTy( m_LLVMContext ) }, false ), llvm::Function::ExternalLinkage, "updateInstructionOutput", m_RecompilationModule );
 	m_PanicFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), false ), llvm::Function::ExternalLinkage, "panic", m_RecompilationModule );
+
 	m_SPCWritePortFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext ) }, false ), llvm::Function::ExternalLinkage, "spcWritePort", m_RecompilationModule );
 	m_SPCReadPortFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getInt32Ty( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ) }, false ), llvm::Function::ExternalLinkage, "spcReadPort", m_RecompilationModule );
 
-	llvm::FunctionType* mainFunctionType = llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext ), false );
+	m_DSPWriteFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt8Ty( m_LLVMContext ) }, false ), llvm::Function::ExternalLinkage, "dspWrite", m_RecompilationModule );
+	m_DSPReadFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getInt8Ty( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ) }, false ), llvm::Function::ExternalLinkage, "dspRead", m_RecompilationModule );
+
+	auto mainFunctionType = llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), llvm::Type::getVoidTy( m_LLVMContext ), false );
 	m_MainFunction = llvm::Function::Create( mainFunctionType, llvm::Function::ExternalLinkage, "start", m_RecompilationModule );
 
-	llvm::BasicBlock* entry = llvm::BasicBlock::Create( m_LLVMContext, "EntryBlock", m_MainFunction );
+	auto entry = llvm::BasicBlock::Create( m_LLVMContext, "EntryBlock", m_MainFunction );
 	m_PanicBlock = llvm::BasicBlock::Create( m_LLVMContext, "PanicBlock", m_MainFunction );
 	m_IRBuilder.SetInsertPoint( m_PanicBlock );
 	m_IRBuilder.CreateCall( m_PanicFunction );
@@ -1235,22 +1261,15 @@ void Recompiler::Recompile()
 	m_IRBuilder.SetInsertPoint( entry );
 
 	AddInstructionStringGlobalVariables();
+	CreateFunctions();
 	InitialiseBasicBlocksFromLabelNames();
-	AddDynamicJumpTableBlock();
 	GenerateCode();
 
 	SelectBlock( entry );
 	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, m_RomResetAddr, true ) ), &m_registerPC );
-	auto badInterruptBlock = llvm::BasicBlock::Create( m_LLVMContext, "BadInterruptBlock", m_MainFunction );
-	auto sw = m_IRBuilder.CreateSwitch( m_MainFunction->arg_begin(), badInterruptBlock, 3 );
-	SelectBlock( badInterruptBlock );
-	m_IRBuilder.CreateRetVoid();
-	sw->addCase( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 1, true ) ), m_LabelNamesToBasicBlocks[ m_RomResetLabelName ] );
-	sw->addCase( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 2, true ) ), m_LabelNamesToBasicBlocks[ m_RomNmiLabelName ] );
-	sw->addCase( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 3, true ) ), m_LabelNamesToBasicBlocks[ m_RomIrqLabelName ] );
-
-	AddEnterNmiInterruptCode();
-
+	
+	auto resetFunction = m_Functions[ m_RomResetFuncName ];
+	m_IRBuilder.CreateCall( resetFunction );
 	llvm::verifyModule( m_RecompilationModule, &llvm::errs() );
 
 	std::error_code EC;
@@ -1258,23 +1277,21 @@ void Recompiler::Recompile()
 	m_RecompilationModule.print( outputHumanReadable, nullptr );
 }
 
-void Recompiler::AddEnterNmiInterruptCode( void )
+auto Recompiler::CreateRegisterWidthTest( const uint64_t flag )
 {
-	m_IRBuilder.SetInsertPoint( &( *m_LabelNamesToBasicBlocks[ m_RomNmiLabelName ]->getFirstInsertionPt() ) );
-	PushByteToStack( m_IRBuilder.CreateLoad( &m_registerP, "" ) );
-	PushWordToStack( m_IRBuilder.CreateLoad( &m_registerPC, "" ) );
-	PushByteToStack( m_IRBuilder.CreateLoad( &m_registerPB, "" ) );
-}
+	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, flag, true ) ), "" );
+	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
+	auto thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	if ( m_CurrentBasicBlock )
+	{
+		thenBlock->moveAfter( m_CurrentBasicBlock );
+		elseBlock->moveAfter( thenBlock );
+		endBlock->moveAfter( elseBlock );
+	}
 
-llvm::BasicBlock* Recompiler::CreateIf( llvm::Value* cond )
-{
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "else" );
-	elseBlock->moveAfter( m_CurrentBasicBlock );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "then" );
-	thenBlock->moveAfter( m_CurrentBasicBlock );
-	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
-	SelectBlock( thenBlock );
-	return elseBlock;
+	return std::make_tuple( cond, thenBlock, elseBlock, endBlock );
 }
 
 void Recompiler::AddLabelNameToBasicBlock( const std::string& labelName, llvm::BasicBlock* basicBlock )
@@ -1290,7 +1307,7 @@ void Recompiler::AddOffsetToInstructionString( const uint32_t offset, const std:
 
 llvm::BasicBlock* Recompiler::CreateBlock( const char* name )
 {
-	llvm::BasicBlock* block = llvm::BasicBlock::Create( m_LLVMContext, name );
+	auto block = llvm::BasicBlock::Create( m_LLVMContext, name );
 	block->moveAfter( m_CurrentBasicBlock );
 	return block;
 }
@@ -1350,8 +1367,8 @@ void Recompiler::PerformSep( llvm::Value* value )
 	auto result = m_IRBuilder.CreateAnd( newP, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
 	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
 
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	if ( m_CurrentBasicBlock )
 	{
 		thenBlock->moveAfter( m_CurrentBasicBlock );
@@ -1383,81 +1400,81 @@ void Recompiler::PerformRep( llvm::Value* value )
 	m_IRBuilder.CreateStore( result, &m_registerP );
 }
 
-void Recompiler::PerformBvc( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
+void Recompiler::PerformBvc( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, true ) ), "" );
 	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, true ) ) );
 	
-	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
+	AddConditionalBranch( cond, labelName, functionName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBvs( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
+void Recompiler::PerformBvs( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, true ) ), "" );
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, true ) ) );
 	
-	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
+	AddConditionalBranch( cond, labelName, functionName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBpl( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
+void Recompiler::PerformBpl( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, true ) ), "" );
 	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, true ) ) );
 	
-	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
+	AddConditionalBranch( cond, labelName, functionName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBmi( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
+void Recompiler::PerformBmi( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, true ) ), "" );
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, true ) ) );
 	
-	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
+	AddConditionalBranch( cond, labelName, functionName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBne( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
+void Recompiler::PerformBne( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ), "" );
 	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ) );
 	
-	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
+	AddConditionalBranch( cond, labelName, functionName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBeq( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
+void Recompiler::PerformBeq( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ), "" );
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ) );
 	
-	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
+	AddConditionalBranch( cond, labelName, functionName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBcs( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
+void Recompiler::PerformBcs( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ), "" );
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ) );
 
-	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
+	AddConditionalBranch( cond, labelName, functionName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::PerformBcc( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
+void Recompiler::PerformBcc( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ), "" );
 	auto cond = m_IRBuilder.CreateICmpNE( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ) );
 	
-	AddConditionalBranch( cond, labelName, pcBranchTaken, pcBranchNotTaken );
+	AddConditionalBranch( cond, labelName, functionName, pcBranchTaken, pcBranchNotTaken );
 }
 
-void Recompiler::AddConditionalBranch( llvm::Value* cond, const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
+void Recompiler::AddConditionalBranch( llvm::Value* cond, const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken )
 {
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	auto search = m_LabelNamesToBasicBlocks.find( functionName + "_" + labelName );
 	if ( search != m_LabelNamesToBasicBlocks.end() )
 	{
-		llvm::BasicBlock* takeBranchBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		auto takeBranchBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 		if ( m_CurrentBasicBlock )
 		{
 			takeBranchBlock->moveAfter( m_CurrentBasicBlock );
 		}
-		llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		auto elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 		if ( takeBranchBlock )
 		{
 			elseBlock->moveAfter( takeBranchBlock );
@@ -1475,7 +1492,7 @@ void Recompiler::AddConditionalBranch( llvm::Value* cond, const std::string& lab
 	}
 }
 
-void Recompiler::PerformJsl( const std::string& labelName, const uint32_t jumpAddress )
+void Recompiler::PerformJsl( const uint32_t instructionOffset, const uint32_t jumpAddress )
 {
 	PushByteToStack( m_IRBuilder.CreateLoad( &m_registerPB, "" ) );
 	auto pcPlus3 = m_IRBuilder.CreateAdd( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 3, false ) ), "" );
@@ -1486,42 +1503,40 @@ void Recompiler::PerformJsl( const std::string& labelName, const uint32_t jumpAd
 	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( pc ), false ) ), &m_registerPC );
 	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( pb ), false ) ), &m_registerPB );
 
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
-	if ( search != m_LabelNamesToBasicBlocks.end() )
-	{
-		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-		m_IRBuilder.CreateBr( search->second );
-	}
-	else
-	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
-	}
+	auto findFunctionNameResult = m_OffsetToFunctionName.find( instructionOffset );
+	assert( findFunctionNameResult != m_OffsetToFunctionName.end() );
+	
+	const auto& functionName = findFunctionNameResult->second;
+	auto findFunctionResult = m_Functions.find( functionName );
+	assert( findFunctionResult != m_Functions.end() );
+	auto function = findFunctionResult->second;
+	m_IRBuilder.CreateCall( function );
 
+	// TODO - check we need to reset the current basic block and if so work out why?
 	m_CurrentBasicBlock = nullptr;
 }
 
-void Recompiler::PerformJsr( const std::string& labelName, const uint32_t jumpAddress )
+void Recompiler::PerformJsr( const uint32_t instructionOffset, const uint32_t jumpAddress )
 {
 	auto pcPlus2 = m_IRBuilder.CreateAdd( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 2, false ) ), "" );
 	PushWordToStack( pcPlus2  );
 
 	const uint16_t pc = jumpAddress & 0xffff;
 	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( pc ), false ) ), &m_registerPC );
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
-	if ( search != m_LabelNamesToBasicBlocks.end() )
-	{
-		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-		m_IRBuilder.CreateBr( search->second );
-	}
-	else
-	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
-	}
+
+	auto findFunctionNameResult = m_OffsetToFunctionName.find( instructionOffset );
+	assert( findFunctionNameResult != m_OffsetToFunctionName.end() );
+
+	const auto& functionName = findFunctionNameResult->second;
+	auto findFunctionResult = m_Functions.find( functionName );
+	assert( findFunctionResult != m_Functions.end() );
+	auto function = findFunctionResult->second;
+	m_IRBuilder.CreateCall( function );
 
 	m_CurrentBasicBlock = nullptr;
 }
 
-void Recompiler::PerformJsrAbsIdxX( const uint32_t jumpAddress )
+void Recompiler::PerformJsrAbsIdxX( const uint32_t instructionOffset, const uint32_t jumpAddress )
 {
 	auto pcPlus2 = m_IRBuilder.CreateAdd( m_IRBuilder.CreateLoad( &m_registerPC, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 2, false ) ), "" );
 	PushWordToStack( pcPlus2 );
@@ -1539,11 +1554,33 @@ void Recompiler::PerformJsrAbsIdxX( const uint32_t jumpAddress )
 	m_IRBuilder.CreateStore( newPC, &m_registerPC );
 	
 	PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-	m_IRBuilder.CreateBr( m_DynamicJumpTableBlock );
+
+	auto findJumpTableEntries = m_JumpTables.find( instructionOffset );
+	assert( findJumpTableEntries != m_JumpTables.end() );
+	
+	auto jumpTableEntries = findJumpTableEntries->second;
+	const auto numSwitchCases = jumpTableEntries.size();
+	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto sw = m_IRBuilder.CreateSwitch( CreateLoadX16(), endBlock, numSwitchCases );
+	for ( const auto& jumpTableEntry : jumpTableEntries )
+	{
+		const auto& functionName = jumpTableEntry.second;
+		auto findFunctionResult = m_Functions.find( functionName );
+		assert( findFunctionResult != m_Functions.end() );
+		auto function = findFunctionResult->second;
+
+		auto caseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		SelectBlock( caseBlock );
+		m_IRBuilder.CreateCall( function );
+		m_IRBuilder.CreateBr( endBlock );
+		auto caseValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( jumpTableEntry.first ), false ) );
+		sw->addCase( caseValue, caseBlock );
+	}
+
 	m_CurrentBasicBlock = nullptr;
 }
 
-void Recompiler::PerformJmpAbsIdxX( const uint32_t jumpAddress )
+void Recompiler::PerformJmpAbsIdxX( const uint32_t instructionOffset, const std::string& functionName, const uint32_t jumpAddress )
 {
 	auto pb = m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerPB ), llvm::Type::getInt32Ty( m_LLVMContext ) ), 16 );
 	auto operandAddress = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( jumpAddress & 0xffff ), false ) );
@@ -1558,16 +1595,41 @@ void Recompiler::PerformJmpAbsIdxX( const uint32_t jumpAddress )
 	m_IRBuilder.CreateStore( newPC, &m_registerPC );
 
 	PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-	m_IRBuilder.CreateBr( m_DynamicJumpTableBlock );
+
+	auto findJumpTableEntries = m_JumpTables.find( instructionOffset );
+	assert( findJumpTableEntries != m_JumpTables.end() );
+
+	auto jumpTableEntries = findJumpTableEntries->second;
+	const auto numSwitchCases = jumpTableEntries.size();
+	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto sw = m_IRBuilder.CreateSwitch( CreateLoadX16(), endBlock, numSwitchCases );
+	for ( const auto& jumpTableEntry : jumpTableEntries )
+	{
+		const auto& labelName = functionName + "_" + jumpTableEntry.second;
+		auto findLabelResult = m_LabelNamesToBasicBlocks.find( labelName );
+		assert( findLabelResult != m_LabelNamesToBasicBlocks.end() );
+		auto basicBlock = findLabelResult->second;
+		if ( basicBlock == nullptr )
+		{
+			printf( "debug\n" );
+		}
+
+		auto caseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+		SelectBlock( caseBlock );
+		m_IRBuilder.CreateBr( basicBlock );
+		auto caseValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( jumpTableEntry.first ), false ) );
+		sw->addCase( caseValue, caseBlock );
+	}
+
 	m_CurrentBasicBlock = nullptr;
 }
 
-void Recompiler::PerformJmpAbs( const std::string& labelName, const uint32_t jumpAddress )
+void Recompiler::PerformJmpAbs( const std::string& labelName, const std::string& functionName, const uint32_t jumpAddress )
 {
 	const uint16_t pc = jumpAddress & 0xffff;
 	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( pc ), false ) ), &m_registerPC );
 
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	auto search = m_LabelNamesToBasicBlocks.find( functionName + "_" + labelName );
 	if ( search != m_LabelNamesToBasicBlocks.end() )
 	{
 		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
@@ -1580,14 +1642,14 @@ void Recompiler::PerformJmpAbs( const std::string& labelName, const uint32_t jum
 	}
 }
 
-void Recompiler::PerformJmpLng( const std::string& labelName, const uint32_t jumpAddress )
+void Recompiler::PerformJmpLng( const std::string& labelName, const std::string& functionName, const uint32_t jumpAddress )
 {
 	const uint16_t pc = jumpAddress & 0xffff;
 	const uint8_t pb = (jumpAddress & 0xff0000) >> 16;
 	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( pc ), false ) ), &m_registerPC );
 	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( pb ), false ) ), &m_registerPB );
 
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	auto search = m_LabelNamesToBasicBlocks.find( functionName + "_" + labelName );
 	if ( search != m_LabelNamesToBasicBlocks.end() )
 	{
 		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
@@ -1600,9 +1662,9 @@ void Recompiler::PerformJmpLng( const std::string& labelName, const uint32_t jum
 	}
 }
 
-void Recompiler::PerformBra( const std::string& labelName, llvm::Value* newPC )
+void Recompiler::PerformBra( const std::string& labelName, const std::string& functionName, llvm::Value* newPC )
 {
-	auto search = m_LabelNamesToBasicBlocks.find( labelName );
+	auto search = m_LabelNamesToBasicBlocks.find( functionName + "_" + labelName );
 	if ( search != m_LabelNamesToBasicBlocks.end() )
 	{
 		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), newPC );
@@ -1643,7 +1705,7 @@ void Recompiler::PerformRtl()
 	auto pb = PullByteFromStack();
 	m_IRBuilder.CreateStore( pb, &m_registerPB );
 	PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-	m_IRBuilder.CreateBr( m_DynamicJumpTableBlock );
+	m_IRBuilder.CreateRetVoid();
 	m_CurrentBasicBlock = nullptr;
 }
 
@@ -1653,7 +1715,7 @@ void Recompiler::PerformRts()
 	auto pc = m_IRBuilder.CreateAdd( addr, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 1, false ) ), "" );
 	m_IRBuilder.CreateStore( pc, &m_registerPC );
 	PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
-	m_IRBuilder.CreateBr( m_DynamicJumpTableBlock );
+	m_IRBuilder.CreateRetVoid();
 	m_CurrentBasicBlock = nullptr;
 }
 
@@ -1681,17 +1743,7 @@ llvm::Value* Recompiler::PullWordFromStack()
 
 void Recompiler::PerformPhy( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
@@ -1707,17 +1759,7 @@ void Recompiler::PerformPhy( void )
 
 void Recompiler::PerformPly( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
@@ -1739,17 +1781,7 @@ void Recompiler::PerformPly( void )
 
 void Recompiler::PerformPhx( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
@@ -1765,17 +1797,7 @@ void Recompiler::PerformPhx( void )
 
 void Recompiler::PerformPlx( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
@@ -1797,17 +1819,7 @@ void Recompiler::PerformPlx( void )
 
 void Recompiler::PerformPha( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
@@ -1823,17 +1835,7 @@ void Recompiler::PerformPha( void )
 
 void Recompiler::PerformPla( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
@@ -1890,17 +1892,8 @@ void Recompiler::PerformPld( void )
 
 void Recompiler::PerformInx( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	PerformInc16( &m_registerX );
@@ -1915,17 +1908,8 @@ void Recompiler::PerformInx( void )
 
 void Recompiler::PerformDex( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	PerformDec16( &m_registerX );
@@ -1940,17 +1924,8 @@ void Recompiler::PerformDex( void )
 
 void Recompiler::PerformInc( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	PerformInc16( &m_registerA );
@@ -1967,9 +1942,9 @@ void Recompiler::PerformIncAbs( const uint32_t address )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), 0x20, "" );
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	if ( m_CurrentBasicBlock )
 	{
 		thenBlock->moveAfter( m_CurrentBasicBlock );
@@ -2001,9 +1976,9 @@ void Recompiler::PerformIncDir( const uint32_t address )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), 0x20, "" );
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	if ( m_CurrentBasicBlock )
 	{
 		thenBlock->moveAfter( m_CurrentBasicBlock );
@@ -2051,9 +2026,9 @@ void Recompiler::PerformDecAbs( const uint32_t address )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), 0x20, "" );
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	if ( m_CurrentBasicBlock )
 	{
 		thenBlock->moveAfter( m_CurrentBasicBlock );
@@ -2085,9 +2060,9 @@ void Recompiler::PerformDecDir( const uint32_t address )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), 0x20, "" );
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	if ( m_CurrentBasicBlock )
 	{
 		thenBlock->moveAfter( m_CurrentBasicBlock );
@@ -2119,9 +2094,9 @@ void Recompiler::PerformDec( void )
 {
 	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), 0x20, "" );
 	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	if ( m_CurrentBasicBlock )
 	{
 		thenBlock->moveAfter( m_CurrentBasicBlock );
@@ -2158,17 +2133,8 @@ void Recompiler::PerformDec8( llvm::Value* ptr )
 
 void Recompiler::PerformIny( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	PerformInc16( &m_registerY );
@@ -2183,17 +2149,8 @@ void Recompiler::PerformIny( void )
 
 void Recompiler::PerformDey( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	PerformDec16( &m_registerY );
@@ -2208,17 +2165,8 @@ void Recompiler::PerformDey( void )
 
 void Recompiler::PerformAsl( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	PerformAsl16( &m_registerA );
@@ -2233,17 +2181,7 @@ void Recompiler::PerformAsl( void )
 
 void Recompiler::PerformAslAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -2267,17 +2205,8 @@ void Recompiler::PerformAslAbs( const uint32_t address )
 
 void Recompiler::PerformAslDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto final_address = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( direct, 8 ), operand_address );
@@ -2301,10 +2230,10 @@ void Recompiler::PerformAslDir( const uint32_t address )
 
 void Recompiler::PerformAsl16( llvm::Value* ptr )
 {
-	llvm::Value* x8000 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x8000, false ) );
-	llvm::Value* masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerA, "" ), x8000, "" );
-	llvm::Value* carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x8000, "" );
-	llvm::Value* x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
+	auto x8000 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x8000, false ) );
+	auto masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerA, "" ), x8000, "" );
+	auto carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x8000, "" );
+	auto x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
 	auto complement = m_IRBuilder.CreateXor( x1, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
 	auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
 	auto newP = m_IRBuilder.CreateOr( m_IRBuilder.CreateZExt( carry, llvm::Type::getInt8Ty( m_LLVMContext ) ), unsetP );
@@ -2317,10 +2246,10 @@ void Recompiler::PerformAsl16( llvm::Value* ptr )
 
 void Recompiler::PerformAsl8( llvm::Value* ptr )
 {
-	llvm::Value* x80 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, false ) );
-	llvm::Value* masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ), "" ), x80, "" );
-	llvm::Value* carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x80, "" );
-	llvm::Value* x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
+	auto x80 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, false ) );
+	auto masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ), "" ), x80, "" );
+	auto carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x80, "" );
+	auto x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
 	auto complement = m_IRBuilder.CreateXor( x1, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
 	auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
 	auto newP = m_IRBuilder.CreateOr( m_IRBuilder.CreateZExt( carry, llvm::Type::getInt8Ty( m_LLVMContext ) ), unsetP );
@@ -2333,17 +2262,8 @@ void Recompiler::PerformAsl8( llvm::Value* ptr )
 
 void Recompiler::PerformLsr( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	PerformLsr16( &m_registerA );
@@ -2358,17 +2278,7 @@ void Recompiler::PerformLsr( void )
 
 void Recompiler::PerformLsrAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -2392,17 +2302,8 @@ void Recompiler::PerformLsrAbs( const uint32_t address )
 
 void Recompiler::PerformLsrDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto final_address = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( direct, 8 ), operand_address );
@@ -2426,9 +2327,9 @@ void Recompiler::PerformLsrDir( const uint32_t address )
 
 void Recompiler::PerformLsr16( llvm::Value* ptr )
 {
-	llvm::Value* x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x1, false ) );
-	llvm::Value* masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerA, "" ), x1, "" );
-	llvm::Value* carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x1, "" );
+	auto x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x1, false ) );
+	auto masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerA, "" ), x1, "" );
+	auto carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x1, "" );
 	auto complement = m_IRBuilder.CreateXor( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, false ) ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
 	auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
 	auto newP = m_IRBuilder.CreateOr( m_IRBuilder.CreateZExt( carry, llvm::Type::getInt8Ty( m_LLVMContext ) ), unsetP );
@@ -2441,9 +2342,9 @@ void Recompiler::PerformLsr16( llvm::Value* ptr )
 
 void Recompiler::PerformLsr8( llvm::Value* ptr )
 {
-	llvm::Value* x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, false ) );
-	llvm::Value* masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ), "" ), x1, "" );
-	llvm::Value* carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x1, "" );
+	auto x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, false ) );
+	auto masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ), "" ), x1, "" );
+	auto carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x1, "" );
 	auto complement = m_IRBuilder.CreateXor( x1, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
 	auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
 	auto newP = m_IRBuilder.CreateOr( m_IRBuilder.CreateZExt( carry, llvm::Type::getInt8Ty( m_LLVMContext ) ), unsetP );
@@ -2456,17 +2357,8 @@ void Recompiler::PerformLsr8( llvm::Value* ptr )
 
 void Recompiler::PerformRol( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	PerformRol16( &m_registerA );
@@ -2481,17 +2373,7 @@ void Recompiler::PerformRol( void )
 
 void Recompiler::PerformRolAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -2515,17 +2397,8 @@ void Recompiler::PerformRolAbs( const uint32_t address )
 
 void Recompiler::PerformRolDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto final_address = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( direct, 8 ), operand_address );
@@ -2549,8 +2422,8 @@ void Recompiler::PerformRolDir( const uint32_t address )
 
 void Recompiler::PerformRol16( llvm::Value* ptr )
 {
-	llvm::Value* x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
-	llvm::Value* carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), x1, "" ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
+	auto carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), x1, "" ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 
 	auto data32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( ptr ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto result32 = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( data32, 1 ), carry );
@@ -2569,8 +2442,8 @@ void Recompiler::PerformRol16( llvm::Value* ptr )
 
 void Recompiler::PerformRol8( llvm::Value* ptr )
 {
-	llvm::Value* x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
-	llvm::Value* carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), x1, "" ), llvm::Type::getInt16Ty( m_LLVMContext ) );
+	auto x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
+	auto carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), x1, "" ), llvm::Type::getInt16Ty( m_LLVMContext ) );
 
 	auto data16 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( ptr ), llvm::Type::getInt16Ty( m_LLVMContext ) );
 	auto result16 = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( data16, 1 ), carry );
@@ -2589,17 +2462,8 @@ void Recompiler::PerformRol8( llvm::Value* ptr )
 
 void Recompiler::PerformRor( void )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	PerformRor16( &m_registerA );
@@ -2614,17 +2478,7 @@ void Recompiler::PerformRor( void )
 
 void Recompiler::PerformRorAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -2648,17 +2502,8 @@ void Recompiler::PerformRorAbs( const uint32_t address )
 
 void Recompiler::PerformRorDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto final_address = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( direct, 8 ), operand_address );
@@ -2682,14 +2527,14 @@ void Recompiler::PerformRorDir( const uint32_t address )
 
 void Recompiler::PerformRor16( llvm::Value* ptr )
 {
-	llvm::Value* x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x1, false ) );
-	llvm::Value* masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerA, "" ), x1, "" );
-	llvm::Value* carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x1, "" );
+	auto x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x1, false ) );
+	auto masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerA, "" ), x1, "" );
+	auto carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x1, "" );
 
-	llvm::Value* carryExt = m_IRBuilder.CreateZExt( carry, llvm::Type::getInt32Ty( m_LLVMContext ), "" );
-	llvm::Value* carryExtShifted = m_IRBuilder.CreateShl( carryExt, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 16, false ) ), "" );
+	auto carryExt = m_IRBuilder.CreateZExt( carry, llvm::Type::getInt32Ty( m_LLVMContext ), "" );
+	auto carryExtShifted = m_IRBuilder.CreateShl( carryExt, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 16, false ) ), "" );
 
-	llvm::Value* aExt = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( ptr, "" ), llvm::Type::getInt32Ty( m_LLVMContext ), "" );
+	auto aExt = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( ptr, "" ), llvm::Type::getInt32Ty( m_LLVMContext ), "" );
 	auto newValueBeforeShift = m_IRBuilder.CreateOr( aExt, carryExtShifted, "" );
 	auto newCarry = m_IRBuilder.CreateICmpNE( m_IRBuilder.CreateAnd( newValueBeforeShift, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x1, false ) ), "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0, false ) ), "" );
 
@@ -2706,14 +2551,14 @@ void Recompiler::PerformRor16( llvm::Value* ptr )
 
 void Recompiler::PerformRor8( llvm::Value* ptr )
 {
-	llvm::Value* x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, false ) );
-	llvm::Value* masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ), "" ), x1, "" );
-	llvm::Value* carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x1, "" );
+	auto x1 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, false ) );
+	auto masked = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ), "" ), x1, "" );
+	auto carry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x1, "" );
 
-	llvm::Value* carryExt = m_IRBuilder.CreateZExt( carry, llvm::Type::getInt16Ty( m_LLVMContext ), "" );
-	llvm::Value* carryExtShifted = m_IRBuilder.CreateShl( carryExt, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 8, false ) ), "" );
+	auto carryExt = m_IRBuilder.CreateZExt( carry, llvm::Type::getInt16Ty( m_LLVMContext ), "" );
+	auto carryExtShifted = m_IRBuilder.CreateShl( carryExt, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 8, false ) ), "" );
 
-	llvm::Value* aExt = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( ptr, "" ), llvm::Type::getInt16Ty( m_LLVMContext ), "" );
+	auto aExt = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( ptr, "" ), llvm::Type::getInt16Ty( m_LLVMContext ), "" );
 	auto newValueBeforeShift = m_IRBuilder.CreateOr( aExt, carryExtShifted, "" );
 
 	auto newCarry = m_IRBuilder.CreateICmpNE( m_IRBuilder.CreateAnd( newValueBeforeShift, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x1, false ) ), "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0, false ) ), "" );
@@ -2771,17 +2616,8 @@ void Recompiler::PerformTyx( void )
 
 void Recompiler::PerformRegisterTransfer( llvm::Value* sourceRegister, llvm::Value* destinationRegister )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	auto newValue16 = PerformRegisterTransfer16( sourceRegister, destinationRegister );
@@ -2873,8 +2709,8 @@ void Recompiler::PerformTsc()
 
 void Recompiler::PerformXba()
 {
-	llvm::Value* a8BeforeSwap = CreateLoadA8();
-	llvm::Value* b8BeforeSwap = CreateLoadB8();
+	auto a8BeforeSwap = CreateLoadA8();
+	auto b8BeforeSwap = CreateLoadB8();
 
 	m_IRBuilder.CreateStore( b8BeforeSwap, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
 
@@ -2896,7 +2732,6 @@ llvm::Value* Recompiler::CreateLoadA8( void )
 
 llvm::Value* Recompiler::CreateLoadB8( void )
 {
-	llvm::Value* indexList[ 2 ] = { llvm::ConstantInt::get( llvm::Type::getInt32Ty( m_LLVMContext ), 0 ), llvm::ConstantInt::get( llvm::Type::getInt32Ty( m_LLVMContext ), 1 ) };
 	auto v = m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
 	auto a = m_IRBuilder.CreateInBoundsGEP( llvm::Type::getInt8Ty( m_LLVMContext ), v, llvm::ConstantInt::get( llvm::Type::getInt32Ty( m_LLVMContext ), 1 ) );
 	return m_IRBuilder.CreateLoad( a, "" );
@@ -2924,72 +2759,86 @@ llvm::Value* Recompiler::CreateLoadY8( void )
 
 void Recompiler::ClearCarry()
 {
-	llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( ~0x1 ), false ) );
+	auto mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( ~0x1 ), false ) );
 	auto masked = m_IRBuilder.CreateAnd( mask, m_IRBuilder.CreateLoad( &m_registerP, "" ), "" );
 	m_IRBuilder.CreateStore( masked, &m_registerP );
 }
 
 void Recompiler::SetCarry()
 {
-	llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( 0x1 ), false ) );
+	auto mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( 0x1 ), false ) );
 	auto masked = m_IRBuilder.CreateOr( mask, m_IRBuilder.CreateLoad( &m_registerP, "" ), "" );
 	m_IRBuilder.CreateStore( masked, &m_registerP );
 }
 
 void Recompiler::ClearDecimal()
 {
-	llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( ~( 1 << 3) ), false ) );
+	auto mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( ~( 1 << 3) ), false ) );
 	auto masked = m_IRBuilder.CreateAnd( mask, m_IRBuilder.CreateLoad( &m_registerP, "" ), "" );
 	m_IRBuilder.CreateStore( masked, &m_registerP );
 }
 
 void Recompiler::SetDecimal()
 {
-	llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( 1 << 3 ), false ) );
+	auto mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( 1 << 3 ), false ) );
 	auto masked = m_IRBuilder.CreateOr( mask, m_IRBuilder.CreateLoad( &m_registerP, "" ), "" );
 	m_IRBuilder.CreateStore( masked, &m_registerP );
 }
 
 void Recompiler::ClearInterrupt()
 {
-	llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( ~( 1 << 2 ) ), false ) );
+	auto mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( ~( 1 << 2 ) ), false ) );
 	auto masked = m_IRBuilder.CreateAnd( mask, m_IRBuilder.CreateLoad( &m_registerP, "" ), "" );
 	m_IRBuilder.CreateStore( masked, &m_registerP );
 }
 
 void Recompiler::SetInterrupt()
 {
-	llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( 1 << 2 ), false ) );
+	auto mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( 1 << 2 ), false ) );
 	auto masked = m_IRBuilder.CreateOr( mask, m_IRBuilder.CreateLoad( &m_registerP, "" ), "" );
 	m_IRBuilder.CreateStore( masked, &m_registerP );
 }
 
 void Recompiler::ClearOverflow()
 {
-	llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( ~( 1 << 6 ) ), false ) );
+	auto mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, static_cast<uint64_t>( ~( 1 << 6 ) ), false ) );
 	auto masked = m_IRBuilder.CreateAnd( mask, m_IRBuilder.CreateLoad( &m_registerP, "" ), "" );
 	m_IRBuilder.CreateStore( masked, &m_registerP );
 }
 
 void Recompiler::PerformCmp16( llvm::Value* lValue, llvm::Value* rValue )
 {
-	llvm::Value* diff = m_IRBuilder.CreateSub( lValue, rValue, "" );
+	auto lValue32 = m_IRBuilder.CreateZExt( rValue, llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto rValue32 = m_IRBuilder.CreateZExt( lValue, llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto diff = m_IRBuilder.CreateSub( rValue32, lValue32, "" );
 	TestAndSetZero16( diff );
 	TestAndSetNegative16( diff );
-	TestAndSetCarrySubtraction( lValue, rValue );
+	TestAndSetCarrySubtraction16( diff );
 }
 
 void Recompiler::PerformCmp8( llvm::Value* lValue, llvm::Value* rValue )
 {
-	llvm::Value* diff = m_IRBuilder.CreateSub( lValue, rValue, "" );
+	auto lValue16 = m_IRBuilder.CreateZExt( rValue, llvm::Type::getInt16Ty( m_LLVMContext ) );
+	auto rValue16 = m_IRBuilder.CreateZExt( lValue, llvm::Type::getInt16Ty( m_LLVMContext ) );
+	auto diff = m_IRBuilder.CreateSub( rValue16, lValue16, "" );
 	TestAndSetZero8( diff );
 	TestAndSetNegative8( diff );
-	TestAndSetCarrySubtraction( lValue, rValue );
+	TestAndSetCarrySubtraction8( diff );
 }
 
-void Recompiler::TestAndSetCarrySubtraction( llvm::Value* lValue, llvm::Value* rValue )
+void Recompiler::TestAndSetCarrySubtraction16( llvm::Value* value )
 {
-	llvm::Value* isCarry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_UGE, lValue, rValue, "" );
+	auto isCarry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_SGE, value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0, true ) ), "" );
+	auto zExtCarry = m_IRBuilder.CreateZExt( isCarry, llvm::Type::getInt8Ty( m_LLVMContext ) );
+	auto complement = m_IRBuilder.CreateXor( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
+	auto unset = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto newP = m_IRBuilder.CreateOr( zExtCarry, unset );
+	m_IRBuilder.CreateStore( newP, &m_registerP );
+}
+
+void Recompiler::TestAndSetCarrySubtraction8( llvm::Value* value )
+{
+	auto isCarry = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_SGE, value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0, true ) ), "" );
 	auto zExtCarry = m_IRBuilder.CreateZExt( isCarry, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto complement = m_IRBuilder.CreateXor( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x1, true ) ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
 	auto unset = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
@@ -3006,7 +2855,7 @@ void Recompiler::PerformLdy16( llvm::Value* value )
 
 void Recompiler::PerformLdy8( llvm::Value* value )
 {
-	llvm::Value* writeRegisterY8Bit = m_IRBuilder.CreateBitCast( &m_registerY, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
+	auto writeRegisterY8Bit = m_IRBuilder.CreateBitCast( &m_registerY, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
 	m_IRBuilder.CreateStore( value, writeRegisterY8Bit );
 	TestAndSetZero8( value );
 	TestAndSetNegative8( value );
@@ -3021,7 +2870,7 @@ void Recompiler::PerformLdx16( llvm::Value* value )
 
 void Recompiler::PerformLdx8( llvm::Value* value )
 {
-	llvm::Value* writeRegisterX8Bit = m_IRBuilder.CreateBitCast( &m_registerX, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
+	auto writeRegisterX8Bit = m_IRBuilder.CreateBitCast( &m_registerX, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
 	m_IRBuilder.CreateStore( value, writeRegisterX8Bit );
 	TestAndSetZero8( value );
 	TestAndSetNegative8( value );
@@ -3029,17 +2878,7 @@ void Recompiler::PerformLdx8( llvm::Value* value )
 
 void Recompiler::PerformAdcAbsIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -3064,17 +2903,7 @@ void Recompiler::PerformAdcAbsIdxX( const uint32_t address )
 
 void Recompiler::PerformAdcAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -3096,17 +2925,7 @@ void Recompiler::PerformAdcAbs( const uint32_t address )
 
 void Recompiler::PerformSbcAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -3128,17 +2947,7 @@ void Recompiler::PerformSbcAbs( const uint32_t address )
 
 void Recompiler::PerformSbcAbsIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -3163,17 +2972,8 @@ void Recompiler::PerformSbcAbsIdxX( const uint32_t address )
 
 void Recompiler::PerformSbcDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto final_address = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( direct, 8 ), operand_address );
@@ -3195,17 +2995,8 @@ void Recompiler::PerformSbcDir( const uint32_t address )
 
 void Recompiler::PerformAdcDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto final_address = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( direct, 8 ), operand_address );
@@ -3225,19 +3016,33 @@ void Recompiler::PerformAdcDir( const uint32_t address )
 	SelectBlock( endBlock );
 }
 
+void Recompiler::PerformSbcDirIdxX( const uint32_t address )
+{
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
+	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto x = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto operand_address = m_IRBuilder.CreateAdd( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) ), x );
+	auto final_address = m_IRBuilder.CreateAdd( direct, operand_address );
+
+	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
+
+	SelectBlock( thenBlock );
+	auto ptr16 = DynamicLoad16( final_address );
+	PerformSbc16( m_IRBuilder.CreateLoad( ptr16 ) );
+	m_IRBuilder.CreateBr( endBlock );
+
+	SelectBlock( elseBlock );
+	auto ptr8 = DynamicLoad8( final_address );
+	PerformSbc8( m_IRBuilder.CreateLoad( ptr8 ) );
+	m_IRBuilder.CreateBr( endBlock );
+
+	SelectBlock( endBlock );
+}
+
 void Recompiler::PerformSbcLongIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto baseAddress = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto x = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -3259,17 +3064,7 @@ void Recompiler::PerformSbcLongIdxX( const uint32_t address )
 
 void Recompiler::PerformAdcLongIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto baseAddress = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto x = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -3291,17 +3086,8 @@ void Recompiler::PerformAdcLongIdxX( const uint32_t address )
 
 void Recompiler::PerformAdcLong( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	auto ptr16 = StaticLoad16( address );
@@ -3316,36 +3102,64 @@ void Recompiler::PerformAdcLong( const uint32_t address )
 	SelectBlock( endBlock );
 }
 
+void Recompiler::TestAndSetCarryAddition16( llvm::Value* value )
+{
+	auto newCarry = m_IRBuilder.CreateICmpUGE( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x10000, true ) ) );
+	auto mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
+	auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
+	auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto newP = m_IRBuilder.CreateOr( m_IRBuilder.CreateZExt( newCarry, llvm::Type::getInt8Ty( m_LLVMContext ) ), unsetP );
+	m_IRBuilder.CreateStore( newP, &m_registerP );
+}
+
+void Recompiler::TestAndSetCarryAddition8( llvm::Value* value )
+{
+	auto newCarry = m_IRBuilder.CreateICmpUGE( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x0100, true ) ) );
+	auto mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
+	auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
+	auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto newP = m_IRBuilder.CreateOr( m_IRBuilder.CreateZExt( newCarry, llvm::Type::getInt8Ty( m_LLVMContext ) ), unsetP );
+	m_IRBuilder.CreateStore( newP, &m_registerP );
+}
+
+void Recompiler::TestAndSetOverflowAddition16( llvm::Value* value )
+{
+	auto outsidePositiveRange = m_IRBuilder.CreateICmpSGT( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 32767, true ) ) );
+	auto outsideNegativeRange = m_IRBuilder.CreateICmpSLT( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, -32768, true ) ) );
+	auto newOverflow = m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( m_IRBuilder.CreateOr( outsideNegativeRange, outsidePositiveRange, "" ), llvm::Type::getInt8Ty( m_LLVMContext ) ), 6 );
+
+	auto mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b01000000, false ) );
+	auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
+	auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto newP = m_IRBuilder.CreateOr( newOverflow, unsetP );
+	m_IRBuilder.CreateStore( newP, &m_registerP );
+}
+
+void Recompiler::TestAndSetOverflowAddition8( llvm::Value* value )
+{
+	auto outsidePositiveRange = m_IRBuilder.CreateICmpSGT( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 127, true ) ) );
+	auto outsideNegativeRange = m_IRBuilder.CreateICmpSLT( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, -128, true ) ) );
+	auto newOverflow = m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( m_IRBuilder.CreateOr( outsideNegativeRange, outsidePositiveRange, "" ), llvm::Type::getInt8Ty( m_LLVMContext ) ), 6 );
+
+	auto mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b01000000, false ) );
+	auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
+	auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
+	auto newP = m_IRBuilder.CreateOr( newOverflow, unsetP );
+	m_IRBuilder.CreateStore( newP, &m_registerP );
+}
+
 void Recompiler::PerformAdc16( llvm::Value* value )
 {
 	auto acc32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerA, "" ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto value32 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt32Ty( m_LLVMContext ) );
-	auto answer32 = m_IRBuilder.CreateAdd( acc32, value32, "" );
+	auto result32 = m_IRBuilder.CreateAdd( acc32, value32, "" );
 	auto carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::APInt( 8, static_cast<uint64_t>( 0x1 ), false ) ), llvm::Type::getInt32Ty( m_LLVMContext ) );
-	answer32 = m_IRBuilder.CreateAdd( answer32, carry );
+	result32 = m_IRBuilder.CreateAdd( result32, carry );
 
-	{
-		auto newCarry = m_IRBuilder.CreateICmpUGE( answer32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x10000, true ) ) );
-		llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
-		auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
-		auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
-		auto newP = m_IRBuilder.CreateOr( m_IRBuilder.CreateZExt( newCarry, llvm::Type::getInt8Ty( m_LLVMContext ) ), unsetP );
-		m_IRBuilder.CreateStore( newP, &m_registerP );
-	}
-	
-	{
-		auto outsidePositiveRange = m_IRBuilder.CreateICmpSGT( answer32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 32767, true ) ) );
-		auto outsideNegativeRange = m_IRBuilder.CreateICmpSLT( answer32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, -32768, true ) ) );
-		auto newOverflow = m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( m_IRBuilder.CreateOr( outsideNegativeRange, outsidePositiveRange, "" ), llvm::Type::getInt8Ty( m_LLVMContext ) ), 6 );
+	TestAndSetCarryAddition16( result32 );
+	TestAndSetOverflowAddition16( result32 );
 
-		llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b01000000, false ) );
-		auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
-		auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
-		auto newP = m_IRBuilder.CreateOr( newOverflow, unsetP );
-		m_IRBuilder.CreateStore( newP, &m_registerP );
-	}
-
-	auto newAcc = m_IRBuilder.CreateTrunc( answer32, llvm::Type::getInt16Ty( m_LLVMContext ) );
+	auto newAcc = m_IRBuilder.CreateTrunc( result32, llvm::Type::getInt16Ty( m_LLVMContext ) );
 	m_IRBuilder.CreateStore( newAcc, &m_registerA );
 	TestAndSetZero16( newAcc );
 	TestAndSetNegative16( newAcc );
@@ -3355,32 +3169,14 @@ void Recompiler::PerformAdc8( llvm::Value* value )
 {
 	auto acc16 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerA, "" ), llvm::Type::getInt16Ty( m_LLVMContext ) );
 	auto value16 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt16Ty( m_LLVMContext ) );
-	auto answer16 = m_IRBuilder.CreateAdd( acc16, value16, "" );
+	auto result16 = m_IRBuilder.CreateAdd( acc16, value16, "" );
 	auto carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::APInt( 8, static_cast<uint64_t>( 0x1 ), false ) ), llvm::Type::getInt16Ty( m_LLVMContext ) );
-	answer16 = m_IRBuilder.CreateAdd( answer16, carry );
+	result16 = m_IRBuilder.CreateAdd( result16, carry );
 
-	{
-		auto newCarry = m_IRBuilder.CreateICmpUGE( answer16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x0100, true ) ) );
-		llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
-		auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
-		auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
-		auto newP = m_IRBuilder.CreateOr( m_IRBuilder.CreateZExt( newCarry, llvm::Type::getInt8Ty( m_LLVMContext ) ), unsetP );
-		m_IRBuilder.CreateStore( newP, &m_registerP );
-	}
+	TestAndSetCarryAddition8( value );
+	TestAndSetOverflowAddition8( value );
 
-	{
-		auto outsidePositiveRange = m_IRBuilder.CreateICmpSGT( answer16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 127, true ) ) );
-		auto outsideNegativeRange = m_IRBuilder.CreateICmpSLT( answer16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, -128, true ) ) );
-		auto newOverflow = m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( m_IRBuilder.CreateOr( outsideNegativeRange, outsidePositiveRange, "" ), llvm::Type::getInt8Ty( m_LLVMContext ) ), 6 );
-
-		llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b01000000, false ) );
-		auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
-		auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
-		auto newP = m_IRBuilder.CreateOr( newOverflow, unsetP );
-		m_IRBuilder.CreateStore( newP, &m_registerP );
-	}
-
-	auto newAcc = m_IRBuilder.CreateTrunc( answer16, llvm::Type::getInt8Ty( m_LLVMContext ) );
+	auto newAcc = m_IRBuilder.CreateTrunc( result16, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	m_IRBuilder.CreateStore( newAcc, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
 	TestAndSetZero8( newAcc );
 	TestAndSetNegative8( newAcc );
@@ -3390,33 +3186,15 @@ void Recompiler::PerformSbc16( llvm::Value* value )
 {
 	auto acc32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerA, "" ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto value32 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt32Ty( m_LLVMContext ) );
-	auto answer32 = m_IRBuilder.CreateSub( acc32, value32, "" );
+	auto result32 = m_IRBuilder.CreateSub( acc32, value32, "" );
 	auto carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::APInt( 8, static_cast<uint64_t>( 0x1 ), false ) ), llvm::Type::getInt32Ty( m_LLVMContext ) );
-	answer32 = m_IRBuilder.CreateAdd( answer32, carry );
-	answer32 = m_IRBuilder.CreateSub( answer32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 1, true ) ) );
+	result32 = m_IRBuilder.CreateAdd( result32, carry );
+	result32 = m_IRBuilder.CreateSub( result32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 1, true ) ) );
 
-	{
-		auto newCarry = m_IRBuilder.CreateICmpUGE( answer32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0, true ) ) );
-		llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
-		auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
-		auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
-		auto newP = m_IRBuilder.CreateOr( m_IRBuilder.CreateZExt( newCarry, llvm::Type::getInt8Ty( m_LLVMContext ) ), unsetP );
-		m_IRBuilder.CreateStore( newP, &m_registerP );
-	}
+	TestAndSetCarrySubtraction16( result32 );
+	TestAndSetOverflowAddition8( result32 );
 
-	{
-		auto outsidePositiveRange = m_IRBuilder.CreateICmpSGT( answer32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 32767, true ) ) );
-		auto outsideNegativeRange = m_IRBuilder.CreateICmpSLT( answer32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, -32768, true ) ) );
-		auto newOverflow = m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( m_IRBuilder.CreateOr( outsideNegativeRange, outsidePositiveRange, "" ), llvm::Type::getInt8Ty( m_LLVMContext ) ), 6 );
-
-		llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b01000000, false ) );
-		auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
-		auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
-		auto newP = m_IRBuilder.CreateOr( newOverflow, unsetP );
-		m_IRBuilder.CreateStore( newP, &m_registerP );
-	}
-
-	auto newAcc = m_IRBuilder.CreateTrunc( answer32, llvm::Type::getInt16Ty( m_LLVMContext ) );
+	auto newAcc = m_IRBuilder.CreateTrunc( result32, llvm::Type::getInt16Ty( m_LLVMContext ) );
 	m_IRBuilder.CreateStore( newAcc, &m_registerA );
 	TestAndSetZero16( newAcc );
 	TestAndSetNegative16( newAcc );
@@ -3426,33 +3204,15 @@ void Recompiler::PerformSbc8( llvm::Value* value )
 {
 	auto acc16 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerA, "" ), llvm::Type::getInt16Ty( m_LLVMContext ) );
 	auto value16 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt16Ty( m_LLVMContext ) );
-	auto answer16 = m_IRBuilder.CreateSub( acc16, value16, "" );
+	auto result16 = m_IRBuilder.CreateSub( acc16, value16, "" );
 	auto carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::APInt( 8, static_cast<uint64_t>( 0x1 ), false ) ), llvm::Type::getInt16Ty( m_LLVMContext ) );
-	answer16 = m_IRBuilder.CreateAdd( answer16, carry );
-	answer16 = m_IRBuilder.CreateSub( answer16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 1, true ) ) );
+	result16 = m_IRBuilder.CreateAdd( result16, carry );
+	result16 = m_IRBuilder.CreateSub( result16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 1, true ) ) );
 
-	{
-		auto newCarry = m_IRBuilder.CreateICmpUGE( answer16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0, true ) ) );
-		llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b00000001, false ) );
-		auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
-		auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
-		auto newP = m_IRBuilder.CreateOr( m_IRBuilder.CreateZExt( newCarry, llvm::Type::getInt8Ty( m_LLVMContext ) ), unsetP );
-		m_IRBuilder.CreateStore( newP, &m_registerP );
-	}
+	TestAndSetCarrySubtraction8( result16 );
+	TestAndSetOverflowAddition8( result16 );
 
-	{
-		auto outsidePositiveRange = m_IRBuilder.CreateICmpSGT( answer16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 127, true ) ) );
-		auto outsideNegativeRange = m_IRBuilder.CreateICmpSLT( answer16, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, -128, true ) ) );
-		auto newOverflow = m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( m_IRBuilder.CreateOr( outsideNegativeRange, outsidePositiveRange, "" ), llvm::Type::getInt8Ty( m_LLVMContext ) ), 6 );
-
-		llvm::Value* mask = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0b01000000, false ) );
-		auto complement = m_IRBuilder.CreateXor( mask, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
-		auto unsetP = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
-		auto newP = m_IRBuilder.CreateOr( newOverflow, unsetP );
-		m_IRBuilder.CreateStore( newP, &m_registerP );
-	}
-
-	auto newAcc = m_IRBuilder.CreateTrunc( answer16, llvm::Type::getInt8Ty( m_LLVMContext ) );
+	auto newAcc = m_IRBuilder.CreateTrunc( result16, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	m_IRBuilder.CreateStore( newAcc, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
 	TestAndSetZero8( newAcc );
 	TestAndSetNegative8( newAcc );
@@ -3467,7 +3227,7 @@ void Recompiler::PerformLda16( llvm::Value* value )
 
 void Recompiler::PerformLda8( llvm::Value* value )
 {
-	llvm::Value* writeRegisterA8Bit = m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
+	auto writeRegisterA8Bit = m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" );
 	m_IRBuilder.CreateStore( value, writeRegisterA8Bit );
 	TestAndSetZero8( value );
 	TestAndSetNegative8( value );
@@ -3475,8 +3235,8 @@ void Recompiler::PerformLda8( llvm::Value* value )
 
 void Recompiler::PerformOra16( llvm::Value* value )
 {
-	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
-	llvm::Value* newA = m_IRBuilder.CreateOr( loadA, value, "" );
+	auto loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
+	auto newA = m_IRBuilder.CreateOr( loadA, value, "" );
 	m_IRBuilder.CreateStore( newA, &m_registerA );
 	TestAndSetZero16( newA );
 	TestAndSetNegative16( newA );
@@ -3484,8 +3244,8 @@ void Recompiler::PerformOra16( llvm::Value* value )
 
 void Recompiler::PerformOra8( llvm::Value* value )
 {
-	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
-	llvm::Value* newA = m_IRBuilder.CreateOr( loadA, value, "" );
+	auto loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	auto newA = m_IRBuilder.CreateOr( loadA, value, "" );
 	m_IRBuilder.CreateStore( newA, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
 	TestAndSetZero8( newA );
 	TestAndSetNegative8( newA );
@@ -3493,22 +3253,22 @@ void Recompiler::PerformOra8( llvm::Value* value )
 
 void Recompiler::PerformBit16Imm( llvm::Value* value )
 {
-	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
-	llvm::Value* result = m_IRBuilder.CreateAnd( loadA, value, "" );
+	auto loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
+	auto result = m_IRBuilder.CreateAnd( loadA, value, "" );
 	TestAndSetZero16( result );
 }
 
 void Recompiler::PerformBit8Imm( llvm::Value* value )
 {
-	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
-	llvm::Value* result = m_IRBuilder.CreateAnd( loadA, value, "" );
+	auto loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	auto result = m_IRBuilder.CreateAnd( loadA, value, "" );
 	TestAndSetZero8( result );
 }
 
 void Recompiler::PerformAnd16( llvm::Value* value )
 {
-	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
-	llvm::Value* newA = m_IRBuilder.CreateAnd( loadA, value, "" );
+	auto loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
+	auto newA = m_IRBuilder.CreateAnd( loadA, value, "" );
 	m_IRBuilder.CreateStore( newA, &m_registerA );
 	TestAndSetZero16( newA );
 	TestAndSetNegative16( newA );
@@ -3516,8 +3276,8 @@ void Recompiler::PerformAnd16( llvm::Value* value )
 
 void Recompiler::PerformAnd8( llvm::Value* value )
 {
-	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
-	llvm::Value* newA = m_IRBuilder.CreateAnd( loadA, value, "" );
+	auto loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	auto newA = m_IRBuilder.CreateAnd( loadA, value, "" );
 	m_IRBuilder.CreateStore( newA, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
 	TestAndSetZero8( newA );
 	TestAndSetNegative8( newA );
@@ -3525,8 +3285,8 @@ void Recompiler::PerformAnd8( llvm::Value* value )
 
 void Recompiler::PerformEor16( llvm::Value* value )
 {
-	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
-	llvm::Value* newA = m_IRBuilder.CreateXor( loadA, value, "" );
+	auto loadA = m_IRBuilder.CreateLoad( &m_registerA, "" );
+	auto newA = m_IRBuilder.CreateXor( loadA, value, "" );
 	m_IRBuilder.CreateStore( newA, &m_registerA );
 	TestAndSetZero16( newA );
 	TestAndSetNegative16( newA );
@@ -3534,8 +3294,8 @@ void Recompiler::PerformEor16( llvm::Value* value )
 
 void Recompiler::PerformEor8( llvm::Value* value )
 {
-	llvm::LoadInst* loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
-	llvm::Value* newA = m_IRBuilder.CreateXor( loadA, value, "" );
+	auto loadA = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
+	auto newA = m_IRBuilder.CreateXor( loadA, value, "" );
 	m_IRBuilder.CreateStore( newA, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
 	TestAndSetZero8( newA );
 	TestAndSetNegative8( newA );
@@ -3543,8 +3303,8 @@ void Recompiler::PerformEor8( llvm::Value* value )
 
 void Recompiler::TestAndSetOverflow16( llvm::Value* value )
 {
-	llvm::Value* x4000 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x4000, false ) );
-	llvm::Value* masked = m_IRBuilder.CreateAnd( value, x4000, "" );
+	auto x4000 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x4000, false ) );
+	auto masked = m_IRBuilder.CreateAnd( value, x4000, "" );
 	auto isOverflow = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x4000, "" );
 	auto zExtisOverflow = m_IRBuilder.CreateZExt( isOverflow, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto zExtisOverflowShifted = m_IRBuilder.CreateShl( zExtisOverflow, 7 );
@@ -3557,8 +3317,8 @@ void Recompiler::TestAndSetOverflow16( llvm::Value* value )
 
 void Recompiler::TestAndSetOverflow8( llvm::Value* value )
 {
-	llvm::Value* x40 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, false ) );
-	llvm::Value* masked = m_IRBuilder.CreateAnd( value, x40, "" );
+	auto x40 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x40, false ) );
+	auto masked = m_IRBuilder.CreateAnd( value, x40, "" );
 
 	auto complement = m_IRBuilder.CreateXor( x40, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
 	auto unset = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
@@ -3569,8 +3329,8 @@ void Recompiler::TestAndSetOverflow8( llvm::Value* value )
 
 void Recompiler::TestAndSetZero16( llvm::Value* value )
 {
-	llvm::Value* zeroConst = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0, false ) );
-	llvm::Value* isZero = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, value, zeroConst, "" );
+	auto zeroConst = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0, false ) );
+	auto isZero = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, value, zeroConst, "" );
 	auto zExtIsZero = m_IRBuilder.CreateZExt( isZero, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto shiftedIsZero = m_IRBuilder.CreateShl( zExtIsZero, 1 );
 	auto complement = m_IRBuilder.CreateXor( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
@@ -3582,8 +3342,8 @@ void Recompiler::TestAndSetZero16( llvm::Value* value )
 
 void Recompiler::TestAndSetZero8( llvm::Value* value )
 {
-	llvm::Value* zeroConst = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0, false ) );
-	llvm::Value* isZero = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, value, zeroConst, "" );
+	auto zeroConst = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0, false ) );
+	auto isZero = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, value, zeroConst, "" );
 	auto zExtIsZero = m_IRBuilder.CreateZExt( isZero, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto shiftedIsZero = m_IRBuilder.CreateShl( zExtIsZero, 1 );
 	auto complement = m_IRBuilder.CreateXor( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x2, true ) ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
@@ -3595,8 +3355,8 @@ void Recompiler::TestAndSetZero8( llvm::Value* value )
 
 void Recompiler::TestAndSetNegative16( llvm::Value* value )
 {
-	llvm::Value* x8000 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x8000, false ) );
-	llvm::Value* masked = m_IRBuilder.CreateAnd( value, x8000, "" );
+	auto x8000 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0x8000, false ) );
+	auto masked = m_IRBuilder.CreateAnd( value, x8000, "" );
 	auto isNeg = m_IRBuilder.CreateICmp( llvm::CmpInst::ICMP_EQ, masked, x8000, "" );
 	auto zExtisNeg = m_IRBuilder.CreateZExt( isNeg, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto zExtisNegShifted = m_IRBuilder.CreateShl( zExtisNeg, 7 );
@@ -3609,8 +3369,8 @@ void Recompiler::TestAndSetNegative16( llvm::Value* value )
 
 void Recompiler::TestAndSetNegative8( llvm::Value* value )
 {
-	llvm::Value* x80 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, false ) );
-	llvm::Value* masked = m_IRBuilder.CreateAnd( value, x80, "" );
+	auto x80 = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x80, false ) );
+	auto masked = m_IRBuilder.CreateAnd( value, x80, "" );
 
 	auto complement = m_IRBuilder.CreateXor( x80, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0xff, true ) ) );
 	auto unset = m_IRBuilder.CreateAnd( complement, m_IRBuilder.CreateLoad( &m_registerP, "" ) );
@@ -3685,17 +3445,8 @@ llvm::Value* Recompiler::romPtr8( llvm::Value* offset )
 
 void Recompiler::PerformLdaDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto final_address = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( direct, 8 ), operand_address );
@@ -3717,17 +3468,7 @@ void Recompiler::PerformLdaDir( const uint32_t address )
 
 void Recompiler::PerformStzDirIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto x = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -3748,17 +3489,7 @@ void Recompiler::PerformStzDirIdxX( const uint32_t address )
 
 void Recompiler::PerformStyDirIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto x = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -3779,17 +3510,7 @@ void Recompiler::PerformStyDirIdxX( const uint32_t address )
 
 void Recompiler::PerformStxDirIdxY( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto y = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerY ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -3810,17 +3531,7 @@ void Recompiler::PerformStxDirIdxY( const uint32_t address )
 
 void Recompiler::PerformStaDirIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto x = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -3841,17 +3552,7 @@ void Recompiler::PerformStaDirIdxX( const uint32_t address )
 
 void Recompiler::PerformLdxDirIdxY( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto y = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerY ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -3874,17 +3575,7 @@ void Recompiler::PerformLdxDirIdxY( const uint32_t address )
 
 void Recompiler::PerformLdyDirIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto x = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -3907,17 +3598,7 @@ void Recompiler::PerformLdyDirIdxX( const uint32_t address )
 
 void Recompiler::PerformLdaDirIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto x = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -3940,17 +3621,7 @@ void Recompiler::PerformLdaDirIdxX( const uint32_t address )
 
 void Recompiler::PerformStzAbsIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -3973,17 +3644,7 @@ void Recompiler::PerformStzAbsIdxX( const uint32_t address )
 
 void Recompiler::PerformStaAbsIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4006,17 +3667,7 @@ void Recompiler::PerformStaAbsIdxX( const uint32_t address )
 
 void Recompiler::PerformStaAbsIdxY( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4039,17 +3690,7 @@ void Recompiler::PerformStaAbsIdxY( const uint32_t address )
 
 void Recompiler::PerformLdyAbsIdxX( const uint32_t address )
 {
-auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4074,17 +3715,7 @@ auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ),
 
 void Recompiler::PerformLdxAbsIdxY( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4109,17 +3740,7 @@ void Recompiler::PerformLdxAbsIdxY( const uint32_t address )
 
 void Recompiler::PerformLdaAbsIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4144,17 +3765,7 @@ void Recompiler::PerformLdaAbsIdxX( const uint32_t address )
 
 void Recompiler::PerformLdaAbsIdxY( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4179,17 +3790,7 @@ void Recompiler::PerformLdaAbsIdxY( const uint32_t address )
 
 void Recompiler::PerformLdaAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4211,17 +3812,7 @@ void Recompiler::PerformLdaAbs( const uint32_t address )
 
 void Recompiler::PerformLdxAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4243,17 +3834,7 @@ void Recompiler::PerformLdxAbs( const uint32_t address )
 
 void Recompiler::PerformLdxDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4275,17 +3856,7 @@ void Recompiler::PerformLdxDir( const uint32_t address )
 
 void Recompiler::PerformLdyAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4307,17 +3878,7 @@ void Recompiler::PerformLdyAbs( const uint32_t address )
 
 void Recompiler::PerformLdyDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4339,17 +3900,7 @@ void Recompiler::PerformLdyDir( const uint32_t address )
 
 void Recompiler::PerformTsbAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4373,17 +3924,7 @@ void Recompiler::PerformTsbAbs( const uint32_t address )
 
 void Recompiler::PerformTsbDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4407,17 +3948,7 @@ void Recompiler::PerformTsbDir( const uint32_t address )
 
 void Recompiler::PerformTrbDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4441,17 +3972,7 @@ void Recompiler::PerformTrbDir( const uint32_t address )
 
 void Recompiler::PerformTrbAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4475,53 +3996,43 @@ void Recompiler::PerformTrbAbs( const uint32_t address )
 
 void Recompiler::PerformTsb16( llvm::Value* ptr )
 {
-	llvm::Value* value = m_IRBuilder.CreateLoad( ptr );
+	auto value = m_IRBuilder.CreateLoad( ptr );
 	auto acc = m_IRBuilder.CreateLoad( &m_registerA );
 	TestAndSetZero16( m_IRBuilder.CreateAnd( value, acc ) );
-	value = m_IRBuilder.CreateOr( value, acc );
-	m_IRBuilder.CreateStore( value, ptr );
+	auto newValue = m_IRBuilder.CreateOr( value, acc );
+	m_IRBuilder.CreateStore( newValue, ptr );
 }
 
 void Recompiler::PerformTsb8( llvm::Value* ptr )
 {
-	llvm::Value* value = m_IRBuilder.CreateLoad( ptr );
+	auto value = m_IRBuilder.CreateLoad( ptr );
 	auto acc = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
 	TestAndSetZero8( m_IRBuilder.CreateAnd( value, acc ) );
-	value = m_IRBuilder.CreateOr( value, acc );
-	m_IRBuilder.CreateStore( value, ptr );
+	auto newValue = m_IRBuilder.CreateOr( value, acc );
+	m_IRBuilder.CreateStore( newValue, ptr );
 }
 
 void Recompiler::PerformTrb16( llvm::Value* ptr )
 {
-	llvm::Value* value = m_IRBuilder.CreateLoad( ptr );
+	auto value = m_IRBuilder.CreateLoad( ptr );
 	auto acc = m_IRBuilder.CreateLoad( &m_registerA );
 	TestAndSetZero16( m_IRBuilder.CreateAnd( value, acc ) );
-	value = m_IRBuilder.CreateAnd( value, m_IRBuilder.CreateXor( acc, 0xffff ) );
-	m_IRBuilder.CreateStore( value, ptr );
+	auto newValue = m_IRBuilder.CreateAnd( value, m_IRBuilder.CreateXor( acc, 0xffff ) );
+	m_IRBuilder.CreateStore( newValue, ptr );
 }
 
 void Recompiler::PerformTrb8( llvm::Value* ptr )
 {
-	llvm::Value* value = m_IRBuilder.CreateLoad( ptr );
+	auto value = m_IRBuilder.CreateLoad( ptr );
 	auto acc = m_IRBuilder.CreateLoad( m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
 	TestAndSetZero8( m_IRBuilder.CreateAnd( value, acc ) );
-	value = m_IRBuilder.CreateAnd( value, m_IRBuilder.CreateXor( acc, 0xff ) );
-	m_IRBuilder.CreateStore( value, ptr );
+	auto newValue = m_IRBuilder.CreateAnd( value, m_IRBuilder.CreateXor( acc, 0xff ) );
+	m_IRBuilder.CreateStore( newValue, ptr );
 }
 
 void Recompiler::PerformAndDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4543,17 +4054,7 @@ void Recompiler::PerformAndDir( const uint32_t address )
 
 void Recompiler::PerformAndAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4575,17 +4076,7 @@ void Recompiler::PerformAndAbs( const uint32_t address )
 
 void Recompiler::PerformEorAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4607,17 +4098,7 @@ void Recompiler::PerformEorAbs( const uint32_t address )
 
 void Recompiler::PerformEorDirIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto x = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -4640,17 +4121,7 @@ void Recompiler::PerformEorDirIdxX( const uint32_t address )
 
 void Recompiler::PerformEorDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4672,17 +4143,7 @@ void Recompiler::PerformEorDir( const uint32_t address )
 
 void Recompiler::PerformCmpAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4704,17 +4165,7 @@ void Recompiler::PerformCmpAbs( const uint32_t address )
 
 void Recompiler::PerformCmpDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4736,17 +4187,7 @@ void Recompiler::PerformCmpDir( const uint32_t address )
 
 void Recompiler::PerformCpxAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4768,17 +4209,7 @@ void Recompiler::PerformCpxAbs( const uint32_t address )
 
 void Recompiler::PerformCpxDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4800,17 +4231,7 @@ void Recompiler::PerformCpxDir( const uint32_t address )
 
 void Recompiler::PerformCpyAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4832,17 +4253,7 @@ void Recompiler::PerformCpyAbs( const uint32_t address )
 
 void Recompiler::PerformCpyDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4864,17 +4275,7 @@ void Recompiler::PerformCpyDir( const uint32_t address )
 
 void Recompiler::PerformOraAbsIdxY( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4899,17 +4300,7 @@ void Recompiler::PerformOraAbsIdxY( const uint32_t address )
 
 void Recompiler::PerformOraAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4931,17 +4322,7 @@ void Recompiler::PerformOraAbs( const uint32_t address )
 
 void Recompiler::PerformOraDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4963,17 +4344,7 @@ void Recompiler::PerformOraDir( const uint32_t address )
 
 void Recompiler::PerformBitDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -4995,17 +4366,7 @@ void Recompiler::PerformBitDir( const uint32_t address )
 
 void Recompiler::PerformBitAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -5043,17 +4404,7 @@ void Recompiler::PerformBit8( llvm::Value* value )
 
 void Recompiler::PerformStaDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -5073,17 +4424,7 @@ void Recompiler::PerformStaDir( const uint32_t address )
 
 void Recompiler::PerformStxDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -5103,17 +4444,7 @@ void Recompiler::PerformStxDir( const uint32_t address )
 
 void Recompiler::PerformStyDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -5133,17 +4464,7 @@ void Recompiler::PerformStyDir( const uint32_t address )
 
 void Recompiler::PerformMvn( const uint32_t operand, const uint32_t instructionOffset, const std::string& instructionString )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
@@ -5165,9 +4486,9 @@ void Recompiler::PerformMvn16( const uint32_t operand, const uint32_t instructio
 
 	auto sourceBank = m_IRBuilder.CreateShl( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( operand & 0xff00 ), false ) ), 16 );
 
-	llvm::BasicBlock* mvnBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* updateInstructionOutputBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* exitBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto mvnBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto updateInstructionOutputBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto exitBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	mvnBlock->moveAfter( m_CurrentBasicBlock );
 	updateInstructionOutputBlock->moveAfter( mvnBlock );
 	exitBlock->moveAfter( updateInstructionOutputBlock );
@@ -5205,9 +4526,9 @@ void Recompiler::PerformMvn8( const uint32_t operand, const uint32_t instruction
 
 	auto sourceBank = m_IRBuilder.CreateShl( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( operand & 0xff00 ), false ) ), 16 );
 
-	llvm::BasicBlock* mvnBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* updateInstructionOutputBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* exitBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto mvnBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto updateInstructionOutputBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto exitBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	mvnBlock->moveAfter( m_CurrentBasicBlock );
 	updateInstructionOutputBlock->moveAfter( mvnBlock );
 	exitBlock->moveAfter( updateInstructionOutputBlock );
@@ -5239,17 +4560,7 @@ void Recompiler::PerformMvn8( const uint32_t operand, const uint32_t instruction
 
 void Recompiler::PerformMvp( const uint32_t operand, const uint32_t instructionOffset, const std::string& instructionString )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
@@ -5271,9 +4582,9 @@ void Recompiler::PerformMvp16( const uint32_t operand, const uint32_t instructio
 
 	auto sourceBank = m_IRBuilder.CreateShl( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( operand & 0xff00 ), false ) ), 16 );
 
-	llvm::BasicBlock* mvnBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* updateInstructionOutputBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* exitBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto mvnBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto updateInstructionOutputBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto exitBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	mvnBlock->moveAfter( m_CurrentBasicBlock );
 	updateInstructionOutputBlock->moveAfter( mvnBlock );
 	exitBlock->moveAfter( updateInstructionOutputBlock );
@@ -5311,9 +4622,9 @@ void Recompiler::PerformMvp8( const uint32_t operand, const uint32_t instruction
 
 	auto sourceBank = m_IRBuilder.CreateShl( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( operand & 0xff00 ), false ) ), 16 );
 
-	llvm::BasicBlock* mvnBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* updateInstructionOutputBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* exitBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto mvnBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto updateInstructionOutputBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto exitBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	mvnBlock->moveAfter( m_CurrentBasicBlock );
 	updateInstructionOutputBlock->moveAfter( mvnBlock );
 	exitBlock->moveAfter( updateInstructionOutputBlock );
@@ -5345,17 +4656,7 @@ void Recompiler::PerformMvp8( const uint32_t operand, const uint32_t instruction
 
 void Recompiler::PerformStzDir( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -5375,17 +4676,7 @@ void Recompiler::PerformStzDir( const uint32_t address )
 
 void Recompiler::PerformStaAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -5405,17 +4696,7 @@ void Recompiler::PerformStaAbs( const uint32_t address )
 
 void Recompiler::PerformStxAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -5435,17 +4716,8 @@ void Recompiler::PerformStxAbs( const uint32_t address )
 
 void Recompiler::PerformStyAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x10, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( X_FLAG );
+
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto final_address = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( bank, 16 ), bank_offset );
@@ -5464,17 +4736,7 @@ void Recompiler::PerformStyAbs( const uint32_t address )
 
 void Recompiler::PerformStzAbs( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto bank = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDB ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto bank_offset = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -5494,17 +4756,7 @@ void Recompiler::PerformStzAbs( const uint32_t address )
 
 void Recompiler::PerformStaLongIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto baseAddress = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto x = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -5524,17 +4776,7 @@ void Recompiler::PerformStaLongIdxX( const uint32_t address )
 
 void Recompiler::PerformStaLong( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto final_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 
@@ -5552,17 +4794,7 @@ void Recompiler::PerformStaLong( const uint32_t address )
 
 void Recompiler::PerformLdaDirIndLngIdxY( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 
 	auto direct = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerDP ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto operand_address = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
@@ -5594,17 +4826,7 @@ void Recompiler::PerformLdaDirIndLngIdxY( const uint32_t address )
 
 void Recompiler::PerformLdaLongIdxX( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
 	
 	auto baseAddress = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) );
 	auto x = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
@@ -5627,17 +4849,8 @@ void Recompiler::PerformLdaLongIdxX( const uint32_t address )
 
 void Recompiler::PerformLdaLong( const uint32_t address )
 {
-	auto result = m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x20, true ) ), "" );
-	auto cond = m_IRBuilder.CreateICmpEQ( result, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 8, 0x0, true ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	if ( m_CurrentBasicBlock )
-	{
-		thenBlock->moveAfter( m_CurrentBasicBlock );
-		elseBlock->moveAfter( thenBlock );
-		endBlock->moveAfter( elseBlock );
-	}
+	auto [ cond, thenBlock, elseBlock, endBlock ] = CreateRegisterWidthTest( M_FLAG );
+
 	m_IRBuilder.CreateCondBr( cond, thenBlock, elseBlock );
 	SelectBlock( thenBlock );
 	auto ptr16 = StaticLoad16( address );
@@ -5664,7 +4877,7 @@ llvm::Value* Recompiler::StaticLoad16( const uint32_t address )
 
 llvm::Value* Recompiler::StaticLoad8( const uint32_t address )
 {
-	auto[ bank, bank_offset ] = getBankAndOffset( address );
+	auto [ bank, bank_offset ] = getBankAndOffset( address );
 
 	if ( bank <= 0x1f && bank_offset <= 0x1fff )
 	{
@@ -5674,6 +4887,11 @@ llvm::Value* Recompiler::StaticLoad8( const uint32_t address )
 	{
 		llvm::Value* args[] = { m_IRBuilder.CreateAnd( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( bank_offset ), false ) ), llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x03, false ) ) ) };
 		return m_IRBuilder.CreateTrunc( m_IRBuilder.CreateCall( m_SPCReadPortFunction, args ), llvm::Type::getInt8Ty( m_LLVMContext ) );
+	}
+	else if ( bank <= 0x3f && ( bank_offset >= 0x6000 && bank_offset <= 0x7001 ) )
+	{
+		llvm::Value* argsDSP[] = { llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( address ), false ) ) };
+		return m_IRBuilder.CreateCall( m_DSPReadFunction, argsDSP );
 	}
 	else if ( bank <= 0x1f && bank_offset >= 0x8000 && bank_offset <= 0xffff )
 	{
@@ -5718,12 +4936,12 @@ llvm::Value* Recompiler::StaticLoad8( const uint32_t address )
 void Recompiler::DynamicStore16( llvm::Value* address, llvm::Value* value )
 {
 	auto low16 = m_IRBuilder.CreateAnd( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 0xff, false ) ), "" );
-	auto low = m_IRBuilder.CreateTrunc( low16, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
-	DynamicStore8( address, low );
+	auto low8 = m_IRBuilder.CreateTrunc( low16, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	DynamicStore8( address, low8 );
 
 	auto high16 = m_IRBuilder.CreateLShr( value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, 8, false ) ), "" );
-	auto high = m_IRBuilder.CreateTrunc( high16, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
-	DynamicStore8( m_IRBuilder.CreateAdd( address, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 1, false ) ) ), high );
+	auto high8 = m_IRBuilder.CreateTrunc( high16, llvm::Type::getInt8Ty( m_LLVMContext ), "" );
+	DynamicStore8( m_IRBuilder.CreateAdd( address, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 1, false ) ) ), high8 );
 }
 
 void Recompiler::DynamicStore8( llvm::Value* address, llvm::Value* value )
@@ -5732,10 +4950,10 @@ void Recompiler::DynamicStore8( llvm::Value* address, llvm::Value* value )
 	auto bank_offset = m_IRBuilder.CreateAnd( address, llvm::APInt( 32, static_cast<uint64_t>( 0xffff ), false ) );
 
 	auto bankCond = m_IRBuilder.CreateICmpULE( bank, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x1f, false ) ) );
-	auto bankOffsetCond = m_IRBuilder.CreateICmpULE( bank, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x1fff, false ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto bankOffsetCond = m_IRBuilder.CreateICmpULE( bank_offset, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x1fff, false ) ) );
+	auto thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	if ( m_CurrentBasicBlock )
 	{
 		thenBlock->moveAfter( m_CurrentBasicBlock );
@@ -5776,9 +4994,28 @@ void Recompiler::DynamicStore8( llvm::Value* address, llvm::Value* value )
 	CreateBranch( endBlock );
 
 	SelectBlock( elseBlockAPU );
+	auto thenBlockDSP = llvm::BasicBlock::Create( m_LLVMContext, "", elseBlock->getParent() );
+	auto elseBlockDSP = llvm::BasicBlock::Create( m_LLVMContext, "", elseBlock->getParent() );
+	thenBlockDSP->moveAfter( elseBlockAPU );
+	elseBlockDSP->moveAfter( thenBlockDSP );
+	endBlock->moveAfter( elseBlockDSP );
+
+	auto dspBankCond = m_IRBuilder.CreateICmpULE( bank, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x3f, false ) ) );
+	auto dspBankOffsetCond1 = m_IRBuilder.CreateICmpUGE( bank_offset, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x6000, false ) ) );
+	auto dspBankOffsetCond2 = m_IRBuilder.CreateICmpULE( bank_offset, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x7001, false ) ) );
+
+	auto dspBankOffset = m_IRBuilder.CreateAnd( dspBankOffsetCond1, dspBankOffsetCond2 );
+	m_IRBuilder.CreateCondBr( m_IRBuilder.CreateAnd( dspBankCond, dspBankOffset ), thenBlockDSP, elseBlockDSP );
+
+	SelectBlock( thenBlockDSP );
+	llvm::Value* argsDSP[] = { address, value };
+	m_IRBuilder.CreateCall( m_DSPWriteFunction, argsDSP );
+	CreateBranch( endBlock );
+
+	SelectBlock( elseBlockDSP );
 	auto thenBlock2 = llvm::BasicBlock::Create( m_LLVMContext, "", elseBlock->getParent() );
 	auto elseBlock2 = llvm::BasicBlock::Create( m_LLVMContext, "", elseBlock->getParent() );
-	thenBlock2->moveAfter( elseBlockAPU );
+	thenBlock2->moveAfter( elseBlockDSP );
 	elseBlock2->moveAfter( thenBlock2 );
 	endBlock->moveAfter( elseBlock2 );
 	bankCond = m_IRBuilder.CreateICmpUGE( bank, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x20, false ) ) );
@@ -5855,9 +5092,9 @@ llvm::Value* Recompiler::DynamicLoad8( llvm::Value* address )
 
 	auto bankCond = m_IRBuilder.CreateICmpULE( bank, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x1f, false ) ) );
 	auto bankOffsetCond = m_IRBuilder.CreateICmpULE( bank_offset, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x1fff, false ) ) );
-	llvm::BasicBlock* thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-	llvm::BasicBlock* endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto elseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	if ( m_CurrentBasicBlock )
 	{
 		thenBlock->moveAfter( m_CurrentBasicBlock );
@@ -5897,9 +5134,29 @@ llvm::Value* Recompiler::DynamicLoad8( llvm::Value* address )
 	CreateBranch( endBlock );
 
 	SelectBlock( elseBlockAPU );
+
+	auto thenBlockDSP = llvm::BasicBlock::Create( m_LLVMContext, "", elseBlock->getParent() );
+	auto elseBlockDSP = llvm::BasicBlock::Create( m_LLVMContext, "", elseBlock->getParent() );
+	thenBlockDSP->moveAfter( elseBlockAPU );
+	elseBlockDSP->moveAfter( thenBlockDSP );
+	endBlock->moveAfter( elseBlockDSP );
+
+	auto dspBankCond = m_IRBuilder.CreateICmpULE( bank, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x3f, false ) ) );
+	auto dspBankOffsetCond1 = m_IRBuilder.CreateICmpUGE( bank_offset, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x6000, false ) ) );
+	auto dspBankOffsetCond2 = m_IRBuilder.CreateICmpULE( bank_offset, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x7001, false ) ) );
+
+	auto dspBankOffset = m_IRBuilder.CreateAnd( dspBankOffsetCond1, dspBankOffsetCond2 );
+	m_IRBuilder.CreateCondBr( m_IRBuilder.CreateAnd( dspBankCond, dspBankOffset ), thenBlockDSP, elseBlockDSP );
+
+	SelectBlock( thenBlockDSP );
+	llvm::Value* argsDSP[] = { address };
+	m_IRBuilder.CreateStore( m_IRBuilder.CreateCall( m_DSPReadFunction, argsDSP ), result );
+	CreateBranch( endBlock );
+
+	SelectBlock( elseBlockDSP );
 	auto thenBlock2 = llvm::BasicBlock::Create( m_LLVMContext, "", elseBlock->getParent() );
 	auto elseBlock2 = llvm::BasicBlock::Create( m_LLVMContext, "", elseBlock->getParent() );
-	thenBlock2->moveAfter( elseBlockAPU );
+	thenBlock2->moveAfter( elseBlockDSP );
 	elseBlock2->moveAfter( thenBlock2 );
 	endBlock->moveAfter( elseBlock2 );
 	bankCond = m_IRBuilder.CreateICmpULE( bank, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 0x1f, false ) ) );
@@ -6046,16 +5303,20 @@ void Recompiler::LoadAST( const char* filename )
 	std::ifstream ifs( filename );
 	if ( ifs.is_open() )
 	{
-		nlohmann::json j = nlohmann::json::parse( ifs );
+		auto j = nlohmann::json::parse( ifs );
 
 		std::vector<nlohmann::json> ast;
-		j[ "rom_reset_label_name" ].get_to( m_RomResetLabelName );
+		j[ "rom_reset_func_name" ].get_to( m_RomResetFuncName );
 		j[ "rom_reset_addr" ].get_to( m_RomResetAddr );
-		j[ "rom_nmi_label_name" ].get_to( m_RomNmiLabelName );
-		j[ "rom_irq_label_name" ].get_to( m_RomIrqLabelName );
+		j[ "rom_nmi_func_name" ].get_to( m_RomNmiFuncName );
+		j[ "rom_irq_func_name" ].get_to( m_RomIrqFuncName );
 		j[ "ast" ].get_to( ast );
+		j[ "offset_to_function_name" ].get_to( m_OffsetToFunctionName );
+		j[ "jump_tables" ].get_to( m_JumpTables );
+		j[ "function_names" ].get_to( m_FunctionNames );
+		j[ "labels_to_functions" ].get_to( m_LabelsToFunctions );
 
-		const uint32_t numNodes = ast.size();
+		const auto numNodes = ast.size();
 		for ( uint32_t i = 0; i < numNodes; i++ )
 		{
 			auto&& current_node = ast[ i ];
@@ -6071,16 +5332,16 @@ void Recompiler::LoadAST( const char* filename )
 				{
 					if ( current_node[ "Instruction" ].contains( "jump_label_name" ) )
 					{
-						m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "instruction_string" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "operand" ], current_node[ "Instruction" ][ "jump_label_name" ],  current_node[ "Instruction" ][ "operand_size" ],  current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ] } );
+						m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "instruction_string" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "operand" ], current_node[ "Instruction" ][ "jump_label_name" ],  current_node[ "Instruction" ][ "operand_size" ],  current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ], current_node[ "Instruction" ][ "func_names" ] } );
 					}
 					else
 					{
-						m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "instruction_string" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "operand" ], current_node[ "Instruction" ][ "operand_size" ],  current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ] } );
+						m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "instruction_string" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "operand" ], current_node[ "Instruction" ][ "operand_size" ],  current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ], current_node[ "Instruction" ][ "func_names" ] } );
 					}
 				}
 				else
 				{
-					m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "instruction_string" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ] } );
+					m_Program.emplace_back( Instruction{ current_node[ "Instruction" ][ "offset" ], current_node[ "Instruction" ][ "instruction_string" ], current_node[ "Instruction" ][ "opcode" ], current_node[ "Instruction" ][ "memory_mode" ], current_node[ "Instruction" ][ "index_mode" ], current_node[ "Instruction" ][ "func_names" ] } );
 				}
 			}
 		}
@@ -6099,10 +5360,9 @@ Recompiler::Label::Label( const std::string& name, const uint32_t offset )
 
 Recompiler::Label::~Label()
 {
-
 }
 
-Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode )
+Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames )
 	: m_Offset( offset )
 	, m_InstructionString( instructionString )
 	, m_Opcode( opcode )
@@ -6111,10 +5371,11 @@ Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& 
 	, m_MemoryMode( memoryMode )
 	, m_IndexMode( indexMode )
 	, m_HasOperand( true )
+	, m_FuncNames( funcNames )
 {
 }
 
-Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode )
+Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames )
 	: m_Offset( offset )
 	, m_InstructionString( instructionString )
 	, m_Opcode( opcode )
@@ -6124,10 +5385,11 @@ Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& 
 	, m_MemoryMode( memoryMode )
 	, m_IndexMode( indexMode )
 	, m_HasOperand( true )
+	, m_FuncNames( funcNames )
 {
 }
 
-Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode )
+Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames )
 	: m_Offset( offset )
 	, m_InstructionString( instructionString )
 	, m_Opcode( opcode )
@@ -6136,10 +5398,10 @@ Recompiler::Instruction::Instruction( const uint32_t offset, const std::string& 
 	, m_MemoryMode( memoryMode )
 	, m_IndexMode( indexMode )
 	, m_HasOperand( false )
+	, m_FuncNames( funcNames )
 {
 }
 
 Recompiler::Instruction::~Instruction()
 {
-
 }

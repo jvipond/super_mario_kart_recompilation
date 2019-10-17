@@ -15,7 +15,7 @@
 #include <fstream>
 #include "spc/SNES_SPC.h"
 
-static constexpr bool compareToDebugLog = false;
+static constexpr bool compareToDebugLog = true;
 
 extern "C"
 {
@@ -34,7 +34,7 @@ extern "C"
 	int8_t wRam[ 0x20000 ] = { 0 };
 	int8_t rom[ 0x80000 ] = { 0 };
 
-	void start( const int32_t interrupt );
+	void start( void );
 	SDL_Window* window = nullptr;
 	SDL_GLContext gl_context = nullptr;
 
@@ -85,6 +85,12 @@ extern "C"
 	void updateInstructionOutput( const uint32_t pc, const char* instructionString )
 	{
 		RegisterState rs = { A, DB, DP, PB, PC, SP, X, Y, P };
+
+		if ( pc == 0x81f743 )
+		{
+			render = true;
+			autoStep = false;
+		}
 		
 		if ( instructionTrace.size() >= 128 )
 		{
@@ -101,7 +107,7 @@ extern "C"
 				{
 					if ( ls.Text.find( "CMP $2140" ) == std::string::npos && ls.Text.find( "BNE $FB" ) == std::string::npos )
 					{
-						std::cout << "Log state does not match register state" << std::endl;
+						/*std::cout << "Log state does not match register state" << std::endl;
 						std::cout << "InstructionString = " << instructionString << " ls.String = " << ls.Text << std::endl;
 						std::cout << "rs.A = " << rs.A << " ls.A = " << ls.A << std::endl;
 						std::cout << "rs.X = " << rs.X << " ls.X = " << ls.X << std::endl;
@@ -111,7 +117,7 @@ extern "C"
 						std::cout << "rs.SP = " << rs.SP << " ls.SP = " << ls.SP << std::endl;
 
 						autoStep = false;
-						render = true;
+						render = false;*/
 					}
 				}
 				assert( rs.A == ls.A && rs.X == ls.X && rs.Y == ls.Y && rs.DP == ls.DP && rs.DB == ls.DB && rs.SP == ls.SP );
@@ -296,14 +302,16 @@ extern "C"
 		incrementCycleCount();
 		return snesSPC.read_port( stime, port );
 	}
-}
+	
+	uint8_t dspRead( uint32_t addr )
+	{
+	}
 
-enum InterruptVector 
-{
-	INTERRUPT_VECTOR_ROM_RESET = 1,
-	INTERRUPT_VECTOR_NMI,
-	INTERRUPT_VECTOR_IRQ,
-};
+	void dspWrite( uint32_t addr, uint8_t data )
+	{
+	}
+
+}
 
 void LoadLog( const char* logPath )
 {
@@ -348,6 +356,7 @@ void LoadRom( const char* romPath )
 
 int main( int argc, char** argv ) 
 {	
+	S9xResetDSP();
 	snesSPC.init();
 	snesSPC.init_rom( iplRom );
 	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER ) != 0 )
@@ -394,7 +403,7 @@ int main( int argc, char** argv )
 	snesSPC.reset();
 	snesSPC.end_frame( 1024000 / 2 );
 
-	start( INTERRUPT_VECTOR_ROM_RESET );
+	start();
 
 	quit();
 	return 0;

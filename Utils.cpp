@@ -10,7 +10,7 @@ std::tuple<uint32_t, uint32_t> getBankAndOffset( uint32_t addr )
 
 uint32_t convertRuntimeAddressToOffset( uint32_t addr )
 {
-	auto[ bank, bank_offset ] = getBankAndOffset( addr );
+	auto [ bank, bank_offset ] = getBankAndOffset( addr );
 
 	if ( addr < 0x400000 )
 	{

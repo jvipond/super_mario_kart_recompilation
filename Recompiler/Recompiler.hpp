@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <variant>
+#include <set>
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 
@@ -18,22 +19,20 @@ public:
 	void Recompile();
 
 	void AddLabelNameToBasicBlock( const std::string& labelName, llvm::BasicBlock* basicBlock );
+	void CreateFunctions();
 	void InitialiseBasicBlocksFromLabelNames();
-	void AddDynamicJumpTableBlock();
 	void GenerateCode();
 	void AddOffsetToInstructionString( const uint32_t offset, const std::string& stringGlobalVariable );
 	void AddInstructionStringGlobalVariables();
-
-	const std::map< std::string, llvm::BasicBlock* >& GetLabelNamesToBasicBlocks( void ) const { return m_LabelNamesToBasicBlocks; }
-	const llvm::BasicBlock* GetCurrentBasicBlock( void ) const { return m_CurrentBasicBlock; }
-	void SetCurrentBasicBlock( llvm::BasicBlock* basicBlock ) { m_CurrentBasicBlock = basicBlock; }
-
 	void SelectBlock( llvm::BasicBlock* basicBlock );
 
+	const std::unordered_map<uint32_t, std::unordered_map<std::string, bool> >& GetLabelsToFunctions() const { return m_LabelsToFunctions; }
+	const std::unordered_map<std::string, llvm::Function*>& GetFunctions() const { return m_Functions; }
+
 	llvm::BasicBlock* CreateBlock( const char* name );
-	llvm::BasicBlock* CreateIf( llvm::Value* cond );
 	void CreateBranch( llvm::BasicBlock* basicBlock );
 	void SetInsertPoint( llvm::BasicBlock* basicBlock );
+	auto CreateRegisterWidthTest( const uint64_t flag );
 	void PerformOra16( llvm::Value* value );
 	void PerformOra8( llvm::Value* value );
 	void PerformAnd16( llvm::Value* value );
@@ -57,6 +56,7 @@ public:
 	void PerformSbcAbs( const uint32_t address );
 	void PerformSbcAbsIdxX( const uint32_t address );
 	void PerformSbcDir( const uint32_t address );
+	void PerformSbcDirIdxX( const uint32_t address );
 	void PerformAdcLongIdxX( const uint32_t address );
 	void PerformSbcLongIdxX( const uint32_t address );
 	void PerformSbc16( llvm::Value* value );
@@ -67,7 +67,12 @@ public:
 	void TestAndSetZero8( llvm::Value* value );
 	void TestAndSetNegative16( llvm::Value* value );
 	void TestAndSetNegative8( llvm::Value* value );
-	void TestAndSetCarrySubtraction( llvm::Value* lValue, llvm::Value* rValue );
+	void TestAndSetCarryAddition16( llvm::Value* value );
+	void TestAndSetCarryAddition8( llvm::Value* value );
+	void TestAndSetOverflowAddition16( llvm::Value* value );
+	void TestAndSetOverflowAddition8( llvm::Value* value );
+	void TestAndSetCarrySubtraction16( llvm::Value* value );
+	void TestAndSetCarrySubtraction8( llvm::Value* value );
 	void TestAndSetOverflow16( llvm::Value* value );
 	void TestAndSetOverflow8( llvm::Value* value );
 	void PerformXba();
@@ -79,22 +84,22 @@ public:
 	void PerformRts();
 	void PerformRti();
 	void PerformPea( llvm::Value* value );
-	void PerformBra( const std::string& labelName, llvm::Value* newPC );
-	void PerformJmpAbs( const std::string& labelName, const uint32_t jumpAddress );
-	void PerformJmpLng( const std::string& labelName, const uint32_t jumpAddress );
-	void PerformJsr( const std::string& labelName, const uint32_t jumpAddress );
-	void PerformJsrAbsIdxX( const uint32_t jumpAddress );
-	void PerformJmpAbsIdxX( const uint32_t jumpAddress );
-	void PerformJsl( const std::string& labelName, const uint32_t jumpAddress );
-	void PerformBcc( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBcs( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBeq( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBne( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBmi( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBpl( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBvc( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBvs( const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void AddConditionalBranch( llvm::Value* cond, const std::string& labelName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
+	void PerformBra( const std::string& labelName, const std::string& functionName, llvm::Value* newPC );
+	void PerformJmpAbs( const std::string& labelName, const std::string& functionName, const uint32_t jumpAddress );
+	void PerformJmpLng( const std::string& labelName, const std::string& functionName, const uint32_t jumpAddress );
+	void PerformJsr( const uint32_t instructionOffset, const uint32_t jumpAddress );
+	void PerformJsrAbsIdxX( const uint32_t instructionOffset, const uint32_t jumpAddress );
+	void PerformJmpAbsIdxX( const uint32_t instructionOffset, const std::string& functionName, const uint32_t jumpAddress );
+	void PerformJsl( const uint32_t instructionOffset, const uint32_t jumpAddress );
+	void PerformBcc( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
+	void PerformBcs( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
+	void PerformBeq( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
+	void PerformBne( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
+	void PerformBmi( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
+	void PerformBpl( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
+	void PerformBvc( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
+	void PerformBvs( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
+	void AddConditionalBranch( llvm::Value* cond, const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
 	void PerformSep( llvm::Value* value );
 	void PerformRep( llvm::Value* value );
 	void PerformPha( void );
@@ -178,7 +183,6 @@ public:
 	llvm::Value* CreateLoadX8( void );
 	llvm::Value* CreateLoadY16( void );
 	llvm::Value* CreateLoadY8( void );
-	void AddEnterNmiInterruptCode( void );
 	llvm::Value* wRamPtr16( const uint32_t offset );
 	llvm::Value* wRamPtr8( const uint32_t offset );
 	llvm::Value* romPtr16( const uint32_t offset );
@@ -267,6 +271,7 @@ private:
 		~Label();
 
 		const std::string& GetName() const { return m_Name; }
+		uint32_t GetOffset() const { return m_Offset; }
 
 	private:
 		std::string m_Name;
@@ -282,9 +287,9 @@ private:
 	class Instruction
 	{
 	public:
-		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode );
-		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode );
-		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode );
+		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames );
+		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames );
+		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames );
 		~Instruction();
 
 		uint8_t GetOpcode( void ) const { return m_Opcode; }
@@ -297,6 +302,7 @@ private:
 		const MemoryMode& GetIndexMode() const { return m_IndexMode; }
 		uint32_t GetOffset( void ) const { return m_Offset; }
 		const std::string& GetJumpLabelName( void ) const { return m_JumpLabelName; }
+		const std::set<std::string>& GetFuncNames( void ) const { return m_FuncNames; }
 
 	private:
 		uint32_t m_Offset;
@@ -308,25 +314,33 @@ private:
 		MemoryMode m_MemoryMode;
 		MemoryMode m_IndexMode;
 		bool m_HasOperand;
+		std::set<std::string> m_FuncNames;
 	};
 
+	void GenerateCodeForInstruction( const Instruction& instruction, const std::string& functionName );
+
+	static constexpr uint64_t M_FLAG = 0b00100000u;
+	static constexpr uint64_t X_FLAG = 0b00010000u;
 
 	llvm::LLVMContext m_LLVMContext;
 	llvm::IRBuilder<> m_IRBuilder;
 	llvm::Module m_RecompilationModule;
 
-	std::string m_RomResetLabelName;
+	std::string m_RomResetFuncName;
 	uint32_t m_RomResetAddr;
-	std::string m_RomNmiLabelName;
-	std::string m_RomIrqLabelName;
+	std::string m_RomNmiFuncName;
+	std::string m_RomIrqFuncName;
+	std::set<std::string> m_FunctionNames;
+	std::unordered_map< uint32_t, std::unordered_map< std::string, bool > > m_LabelsToFunctions;
+	std::unordered_map< uint32_t, std::string > m_OffsetToFunctionName;
+	std::unordered_map< uint32_t, std::unordered_map< uint32_t, std::string > > m_JumpTables;
 	std::vector< std::variant<Label, Instruction> > m_Program;
-	std::map< std::string, uint32_t > m_LabelNamesToOffsets;
-	std::map< uint32_t, std::string > m_OffsetsToLabelNames;
-	std::map< std::string, llvm::BasicBlock* > m_LabelNamesToBasicBlocks;
-	std::map< uint32_t, llvm::BasicBlock* > m_DynamicJumpOffsetsToBasicBlocks;
-	std::map< uint32_t, llvm::GlobalVariable* > m_OffsetsToInstructionStringGlobalVariable;
+	std::unordered_map<std::string, llvm::Function*> m_Functions;
+	std::unordered_map< std::string, uint32_t > m_LabelNamesToOffsets;
+	std::unordered_map< uint32_t, std::string > m_OffsetsToLabelNames;
+	std::unordered_map< std::string, llvm::BasicBlock* > m_LabelNamesToBasicBlocks;
+	std::unordered_map< uint32_t, llvm::GlobalVariable* > m_OffsetsToInstructionStringGlobalVariable;
 
-	llvm::BasicBlock* m_DynamicJumpTableBlock;
 	llvm::Function* m_MainFunction;
 
 	llvm::GlobalVariable m_registerA;
@@ -355,6 +369,9 @@ private:
 
 	llvm::Function* m_SPCWritePortFunction;
 	llvm::Function* m_SPCReadPortFunction;
+
+	llvm::Function* m_DSPWriteFunction;
+	llvm::Function* m_DSPReadFunction;
 
 	llvm::Function* m_ConvertRuntimeAddressFunction;
 	llvm::Function* m_UpdateInstructionOutput;
