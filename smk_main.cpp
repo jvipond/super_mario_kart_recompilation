@@ -356,7 +356,6 @@ void LoadRom( const char* romPath )
 
 int main( int argc, char** argv ) 
 {	
-	S9xResetDSP();
 	snesSPC.init();
 	snesSPC.init_rom( iplRom );
 	if ( SDL_Init( SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER ) != 0 )
