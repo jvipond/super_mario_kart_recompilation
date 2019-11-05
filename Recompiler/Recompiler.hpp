@@ -22,6 +22,7 @@ public:
 	void CreateFunctions();
 	void InitialiseBasicBlocksFromLabelNames();
 	void GenerateCode();
+	void EnforceFunctionEntryBlocksConstraints();
 	void AddOffsetToInstructionString( const uint32_t offset, const std::string& stringGlobalVariable );
 	void AddInstructionStringGlobalVariables();
 	void SelectBlock( llvm::BasicBlock* basicBlock );
@@ -164,7 +165,6 @@ public:
 	void PerformRomCycle( llvm::Value* value, const bool implemented = true );
 	void PerformRomCycle( llvm::Value* value, llvm::Value* newPc, const bool implemented = true );
 	void PerformUpdateInstructionOutput( const uint32_t offset, const std::string& instructionString );
-	void Panic( void );
 	llvm::Value* PullByteFromStack();
 	llvm::Value* PullWordFromStack();
 	void PushByteToStack( llvm::Value* value );
@@ -365,7 +365,6 @@ private:
 	llvm::BasicBlock* m_CurrentBasicBlock;
 	llvm::Function* m_CycleFunction;
 	llvm::Function* m_PanicFunction;
-	llvm::BasicBlock* m_PanicBlock;
 
 	llvm::Function* m_SPCWritePortFunction;
 	llvm::Function* m_SPCReadPortFunction;

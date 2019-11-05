@@ -79,18 +79,12 @@ extern "C"
 	std::vector<Snes9xLogState> logState;
 	uint32_t currentLogStateIndex = 0;
 	static bool autoStep = false;
-	static bool render = false;
+	static bool render = true;
 
 	std::deque<std::tuple<uint32_t, const char*, RegisterState, uint32_t>> instructionTrace;
 	void updateInstructionOutput( const uint32_t pc, const char* instructionString )
 	{
 		RegisterState rs = { A, DB, DP, PB, PC, SP, X, Y, P };
-
-		if ( pc == 0x81f743 )
-		{
-			render = true;
-			autoStep = false;
-		}
 		
 		if ( instructionTrace.size() >= 128 )
 		{
@@ -305,6 +299,7 @@ extern "C"
 	
 	uint8_t dspRead( uint32_t addr )
 	{
+		return 0;
 	}
 
 	void dspWrite( uint32_t addr, uint8_t data )

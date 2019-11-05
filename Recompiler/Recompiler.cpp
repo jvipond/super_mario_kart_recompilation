@@ -31,7 +31,6 @@ Recompiler::Recompiler()
 , m_CurrentBasicBlock( nullptr )
 , m_CycleFunction( nullptr )
 , m_PanicFunction( nullptr )
-, m_PanicBlock( nullptr )
 , m_SPCWritePortFunction( nullptr )
 , m_SPCReadPortFunction( nullptr )
 , m_DSPWriteFunction( nullptr )
@@ -58,9 +57,24 @@ Recompiler::~Recompiler()
 	m_DynamicLoad16.removeFromParent();
 }
 
+void Recompiler::EnforceFunctionEntryBlocksConstraints()
+{
+	for ( const auto& [functionName, function] : m_Functions )
+	{
+		auto& oldEntryBlock = function->getEntryBlock();
+		if ( oldEntryBlock.hasNPredecessorsOrMore( 1 ) )
+		{
+			auto newEntryBlock = llvm::BasicBlock::Create( m_LLVMContext, functionName + "_" + "entryBlock", function );
+			newEntryBlock->moveBefore( &oldEntryBlock );
+			m_IRBuilder.SetInsertPoint( newEntryBlock );
+			m_IRBuilder.CreateBr( &oldEntryBlock );
+		}
+	}
+}
+
 void Recompiler::CreateFunctions()
 {
-	auto voidFunctionType = llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), llvm::Type::getVoidTy( m_LLVMContext ), false );
+	auto voidFunctionType = llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), false );
 	for ( const auto& functionName : m_FunctionNames )
 	{
 		auto function = llvm::Function::Create( voidFunctionType, llvm::Function::ExternalLinkage, functionName, m_RecompilationModule );
@@ -1220,14 +1234,42 @@ void Recompiler::GenerateCode()
 					m_IRBuilder.SetInsertPoint( basicBlock );
 
 					auto codeGenIndex = nodeIndex + 1;
-					while ( std::holds_alternative<Instruction>( m_Program[ codeGenIndex ] ) )
+					auto hasAnyInstructions = false;
+					while ( std::holds_alternative<Instruction>( m_Program[ codeGenIndex ] ) && codeGenIndex < numProgramNodes )
 					{
 						assert( std::holds_alternative<Instruction>( m_Program[ codeGenIndex ] ) );
 						const auto& instruction = std::get<Instruction>( m_Program[ codeGenIndex ] );
-						GenerateCodeForInstruction( instruction, functionEntry.first );
 
+						GenerateCodeForInstruction( instruction, functionEntry.first );
+						
+						hasAnyInstructions = true;
 						codeGenIndex++;
 					}
+					
+					if ( !hasAnyInstructions )
+					{
+						m_IRBuilder.CreateCall( m_PanicFunction );
+						m_IRBuilder.CreateRetVoid();
+						m_CurrentBasicBlock = nullptr;
+					}
+					else if ( m_CurrentBasicBlock != nullptr && codeGenIndex < numProgramNodes )
+					{
+						const auto& nextLabel = std::get<Label>( m_Program[ codeGenIndex ] );
+						const auto nextBasicBlockName = functionEntry.first + "_" + nextLabel.GetName();
+						auto searchNextBasicBlockName = m_LabelNamesToBasicBlocks.find( nextBasicBlockName );
+						
+						if ( searchNextBasicBlockName != m_LabelNamesToBasicBlocks.end() )
+						{	
+							auto nextBasicBlock = searchNextBasicBlockName->second;
+							m_IRBuilder.CreateBr( nextBasicBlock );
+						}
+						else
+						{
+							m_IRBuilder.CreateCall( m_PanicFunction );
+							m_IRBuilder.CreateRetVoid();
+							m_CurrentBasicBlock = nullptr;
+						}
+					}		
 				}
 			}
 		}
@@ -1250,12 +1292,12 @@ void Recompiler::Recompile()
 	m_DSPWriteFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt8Ty( m_LLVMContext ) }, false ), llvm::Function::ExternalLinkage, "dspWrite", m_RecompilationModule );
 	m_DSPReadFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getInt8Ty( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ) }, false ), llvm::Function::ExternalLinkage, "dspRead", m_RecompilationModule );
 
-	auto mainFunctionType = llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), llvm::Type::getVoidTy( m_LLVMContext ), false );
+	auto mainFunctionType = llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), false );
 	m_MainFunction = llvm::Function::Create( mainFunctionType, llvm::Function::ExternalLinkage, "start", m_RecompilationModule );
 
 	auto entry = llvm::BasicBlock::Create( m_LLVMContext, "EntryBlock", m_MainFunction );
-	m_PanicBlock = llvm::BasicBlock::Create( m_LLVMContext, "PanicBlock", m_MainFunction );
-	m_IRBuilder.SetInsertPoint( m_PanicBlock );
+	auto panicBlock = llvm::BasicBlock::Create( m_LLVMContext, "PanicBlock", m_MainFunction );
+	m_IRBuilder.SetInsertPoint( panicBlock );
 	m_IRBuilder.CreateCall( m_PanicFunction );
 	m_IRBuilder.CreateRetVoid();
 	m_IRBuilder.SetInsertPoint( entry );
@@ -1264,17 +1306,23 @@ void Recompiler::Recompile()
 	CreateFunctions();
 	InitialiseBasicBlocksFromLabelNames();
 	GenerateCode();
+	EnforceFunctionEntryBlocksConstraints();
 
 	SelectBlock( entry );
 	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, m_RomResetAddr, true ) ), &m_registerPC );
 	
 	auto resetFunction = m_Functions[ m_RomResetFuncName ];
 	m_IRBuilder.CreateCall( resetFunction );
+	m_IRBuilder.CreateRetVoid();
 	llvm::verifyModule( m_RecompilationModule, &llvm::errs() );
 
 	std::error_code EC;
 	llvm::raw_fd_ostream outputHumanReadable( "smk.ll", EC );
 	m_RecompilationModule.print( outputHumanReadable, nullptr );
+
+	llvm::raw_fd_ostream binaryOutput( "smk.bc", EC );
+	llvm::WriteBitcodeToFile( m_RecompilationModule, binaryOutput );
+	binaryOutput.flush();
 }
 
 auto Recompiler::CreateRegisterWidthTest( const uint64_t flag )
@@ -1326,11 +1374,6 @@ void Recompiler::SelectBlock( llvm::BasicBlock* basicBlock )
 void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
 {
 	m_IRBuilder.SetInsertPoint( basicBlock );
-}
-
-void Recompiler::Panic( void )
-{
-	m_IRBuilder.CreateCall( m_PanicFunction );
 }
 
 void Recompiler::PerformRomCycle( llvm::Value* value, const bool implemented )
@@ -1488,7 +1531,9 @@ void Recompiler::AddConditionalBranch( llvm::Value* cond, const std::string& lab
 	}
 	else
 	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
+		m_IRBuilder.CreateCall( m_PanicFunction );
+		m_IRBuilder.CreateRetVoid();
+		m_CurrentBasicBlock = nullptr;
 	}
 }
 
@@ -1512,8 +1557,7 @@ void Recompiler::PerformJsl( const uint32_t instructionOffset, const uint32_t ju
 	auto function = findFunctionResult->second;
 	m_IRBuilder.CreateCall( function );
 
-	// TODO - check we need to reset the current basic block and if so work out why?
-	m_CurrentBasicBlock = nullptr;
+	//m_CurrentBasicBlock = nullptr;
 }
 
 void Recompiler::PerformJsr( const uint32_t instructionOffset, const uint32_t jumpAddress )
@@ -1533,7 +1577,7 @@ void Recompiler::PerformJsr( const uint32_t instructionOffset, const uint32_t ju
 	auto function = findFunctionResult->second;
 	m_IRBuilder.CreateCall( function );
 
-	m_CurrentBasicBlock = nullptr;
+	//m_CurrentBasicBlock = nullptr;
 }
 
 void Recompiler::PerformJsrAbsIdxX( const uint32_t instructionOffset, const uint32_t jumpAddress )
@@ -1577,7 +1621,9 @@ void Recompiler::PerformJsrAbsIdxX( const uint32_t instructionOffset, const uint
 		sw->addCase( caseValue, caseBlock );
 	}
 
-	m_CurrentBasicBlock = nullptr;
+	SelectBlock( endBlock );
+
+	//m_CurrentBasicBlock = nullptr;
 }
 
 void Recompiler::PerformJmpAbsIdxX( const uint32_t instructionOffset, const std::string& functionName, const uint32_t jumpAddress )
@@ -1607,21 +1653,23 @@ void Recompiler::PerformJmpAbsIdxX( const uint32_t instructionOffset, const std:
 	{
 		const auto& labelName = functionName + "_" + jumpTableEntry.second;
 		auto findLabelResult = m_LabelNamesToBasicBlocks.find( labelName );
-		assert( findLabelResult != m_LabelNamesToBasicBlocks.end() );
-		auto basicBlock = findLabelResult->second;
-		if ( basicBlock == nullptr )
+		if ( findLabelResult != m_LabelNamesToBasicBlocks.end() )
 		{
-			printf( "debug\n" );
+			auto basicBlock = findLabelResult->second;
+			if ( basicBlock )
+			{
+				auto caseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
+				SelectBlock( caseBlock );
+				m_IRBuilder.CreateBr( basicBlock );
+				auto caseValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( jumpTableEntry.first ), false ) );
+				sw->addCase( caseValue, caseBlock );
+			}
 		}
-
-		auto caseBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
-		SelectBlock( caseBlock );
-		m_IRBuilder.CreateBr( basicBlock );
-		auto caseValue = llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, static_cast<uint64_t>( jumpTableEntry.first ), false ) );
-		sw->addCase( caseValue, caseBlock );
 	}
 
-	m_CurrentBasicBlock = nullptr;
+	SelectBlock( endBlock );
+
+	//m_CurrentBasicBlock = nullptr;
 }
 
 void Recompiler::PerformJmpAbs( const std::string& labelName, const std::string& functionName, const uint32_t jumpAddress )
@@ -1634,12 +1682,14 @@ void Recompiler::PerformJmpAbs( const std::string& labelName, const std::string&
 	{
 		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
 		m_IRBuilder.CreateBr( search->second );
-		m_CurrentBasicBlock = nullptr;
 	}
 	else
 	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
+		m_IRBuilder.CreateCall( m_PanicFunction );
+		m_IRBuilder.CreateRetVoid();
 	}
+
+	m_CurrentBasicBlock = nullptr;
 }
 
 void Recompiler::PerformJmpLng( const std::string& labelName, const std::string& functionName, const uint32_t jumpAddress )
@@ -1654,12 +1704,14 @@ void Recompiler::PerformJmpLng( const std::string& labelName, const std::string&
 	{
 		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
 		m_IRBuilder.CreateBr( search->second );
-		m_CurrentBasicBlock = nullptr;
 	}
 	else
 	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
+		m_IRBuilder.CreateCall( m_PanicFunction );
+		m_IRBuilder.CreateRetVoid();
 	}
+
+	m_CurrentBasicBlock = nullptr;
 }
 
 void Recompiler::PerformBra( const std::string& labelName, const std::string& functionName, llvm::Value* newPC )
@@ -1669,11 +1721,11 @@ void Recompiler::PerformBra( const std::string& labelName, const std::string& fu
 	{
 		PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ), newPC );
 		m_IRBuilder.CreateBr( search->second );
-		m_CurrentBasicBlock = nullptr;
 	}
 	else
 	{
-		m_IRBuilder.CreateBr( m_PanicBlock );
+		m_IRBuilder.CreateCall( m_PanicFunction );
+		m_IRBuilder.CreateRetVoid();
 	}
 	m_CurrentBasicBlock = nullptr;
 }
@@ -2811,8 +2863,9 @@ void Recompiler::PerformCmp16( llvm::Value* lValue, llvm::Value* rValue )
 	auto lValue32 = m_IRBuilder.CreateZExt( rValue, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto rValue32 = m_IRBuilder.CreateZExt( lValue, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto diff = m_IRBuilder.CreateSub( rValue32, lValue32, "" );
-	TestAndSetZero16( diff );
-	TestAndSetNegative16( diff );
+	auto diff16 = m_IRBuilder.CreateTrunc( diff, llvm::Type::getInt16Ty( m_LLVMContext ) );
+	TestAndSetZero16( diff16 );
+	TestAndSetNegative16( diff16 );
 	TestAndSetCarrySubtraction16( diff );
 }
 
@@ -2821,8 +2874,9 @@ void Recompiler::PerformCmp8( llvm::Value* lValue, llvm::Value* rValue )
 	auto lValue16 = m_IRBuilder.CreateZExt( rValue, llvm::Type::getInt16Ty( m_LLVMContext ) );
 	auto rValue16 = m_IRBuilder.CreateZExt( lValue, llvm::Type::getInt16Ty( m_LLVMContext ) );
 	auto diff = m_IRBuilder.CreateSub( rValue16, lValue16, "" );
-	TestAndSetZero8( diff );
-	TestAndSetNegative8( diff );
+	auto diff8 = m_IRBuilder.CreateTrunc( diff, llvm::Type::getInt8Ty( m_LLVMContext ) );
+	TestAndSetZero8( diff8 );
+	TestAndSetNegative8( diff8 );
 	TestAndSetCarrySubtraction8( diff );
 }
 
@@ -3173,8 +3227,8 @@ void Recompiler::PerformAdc8( llvm::Value* value )
 	auto carry = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAnd( m_IRBuilder.CreateLoad( &m_registerP, "" ), llvm::APInt( 8, static_cast<uint64_t>( 0x1 ), false ) ), llvm::Type::getInt16Ty( m_LLVMContext ) );
 	result16 = m_IRBuilder.CreateAdd( result16, carry );
 
-	TestAndSetCarryAddition8( value );
-	TestAndSetOverflowAddition8( value );
+	TestAndSetCarryAddition8( result16 );
+	TestAndSetOverflowAddition8( result16 );
 
 	auto newAcc = m_IRBuilder.CreateTrunc( result16, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	m_IRBuilder.CreateStore( newAcc, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ), "" ) );
@@ -3192,7 +3246,7 @@ void Recompiler::PerformSbc16( llvm::Value* value )
 	result32 = m_IRBuilder.CreateSub( result32, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 1, true ) ) );
 
 	TestAndSetCarrySubtraction16( result32 );
-	TestAndSetOverflowAddition8( result32 );
+	TestAndSetOverflowAddition16( result32 );
 
 	auto newAcc = m_IRBuilder.CreateTrunc( result32, llvm::Type::getInt16Ty( m_LLVMContext ) );
 	m_IRBuilder.CreateStore( newAcc, &m_registerA );
