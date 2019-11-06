@@ -14,8 +14,10 @@
 #include <string>
 #include <fstream>
 #include "spc/SNES_SPC.h"
+#include "dsp/dsp.h"
+#include "Utils.hpp"
 
-static constexpr bool compareToDebugLog = true;
+static constexpr bool compareToDebugLog = false;
 
 extern "C"
 {
@@ -28,8 +30,6 @@ extern "C"
 	int16_t X = 0;
 	int16_t Y = 0;
 	int8_t P = 0;
-	int8_t DynamicLoad8 = 0;
-	int16_t DynamicLoad16 = 0;
 
 	int8_t wRam[ 0x20000 ] = { 0 };
 	int8_t rom[ 0x80000 ] = { 0 };
@@ -74,12 +74,13 @@ extern "C"
 		int16_t DP = 0;
 		int8_t DB = 0;
 		int16_t SP = 0;
+		std::string P;
 	};
 	
 	std::vector<Snes9xLogState> logState;
 	uint32_t currentLogStateIndex = 0;
-	static bool autoStep = false;
-	static bool render = true;
+	static bool autoStep = true;
+	static bool render = false;
 
 	std::deque<std::tuple<uint32_t, const char*, RegisterState, uint32_t>> instructionTrace;
 	void updateInstructionOutput( const uint32_t pc, const char* instructionString )
@@ -92,27 +93,27 @@ extern "C"
 		}
 		instructionTrace.push_back( { pc, instructionString, rs, 1 } );
 
+		if ( pc == 0x80805A )
+		{
+			autoStep = false;
+			render = true;
+		}
+
 		if constexpr ( compareToDebugLog )
 		{
 			if ( currentLogStateIndex < logState.size() )
 			{
 				const Snes9xLogState& ls = logState[ currentLogStateIndex ];
-				if ( !( rs.A == ls.A && rs.X == ls.X && rs.Y == ls.Y && rs.DP == ls.DP && rs.DB == ls.DB && rs.SP == ls.SP ) )
-				{
-					if ( ls.Text.find( "CMP $2140" ) == std::string::npos && ls.Text.find( "BNE $FB" ) == std::string::npos )
-					{
-						/*std::cout << "Log state does not match register state" << std::endl;
-						std::cout << "InstructionString = " << instructionString << " ls.String = " << ls.Text << std::endl;
-						std::cout << "rs.A = " << rs.A << " ls.A = " << ls.A << std::endl;
-						std::cout << "rs.X = " << rs.X << " ls.X = " << ls.X << std::endl;
-						std::cout << "rs.Y = " << rs.Y << " ls.Y = " << ls.Y << std::endl;
-						std::cout << "rs.DP = " << rs.DP << " ls.DP = " << ls.DP << std::endl;
-						std::cout << "rs.DB = " << rs.DB << " ls.DB = " << ls.DB << std::endl;
-						std::cout << "rs.SP = " << rs.SP << " ls.SP = " << ls.SP << std::endl;
+				char processorRegisterText[256];
+				std::sprintf( processorRegisterText, "P = e%c%c%c%c%c%c%c%c", ( P & ( 1 << 7 ) ) ? 'N' : 'n', ( P & ( 1 << 6 ) ) ? 'V' : 'v', ( P & ( 1 << 5 ) ) ? 'M' : 'm',
+					( P & ( 1 << 4 ) ) ? 'X' : 'x', ( P & ( 1 << 3 ) ) ? 'D' : 'd', ( P & ( 1 << 2 ) ) ? 'I' : 'i',
+					( P & ( 1 << 1 ) ) ? 'Z' : 'z', ( P & ( 1 << 0 ) ) ? 'C' : 'c' );
 
-						autoStep = false;
-						render = false;*/
-					}
+				auto p = std::string( processorRegisterText );
+				if ( !( rs.A == ls.A && rs.X == ls.X && rs.Y == ls.Y && rs.DP == ls.DP && rs.DB == ls.DB && rs.SP == ls.SP && p == ls.P ) )
+				{
+					autoStep = false;
+					render = true;
 				}
 				assert( rs.A == ls.A && rs.X == ls.X && rs.Y == ls.Y && rs.DP == ls.DP && rs.DB == ls.DB && rs.SP == ls.SP );
 				
@@ -296,16 +297,121 @@ extern "C"
 		incrementCycleCount();
 		return snesSPC.read_port( stime, port );
 	}
+
+	SDSP1 DSP1;
 	
 	uint8_t dspRead( uint32_t addr )
 	{
-		return 0;
+		return DSP1GetByte( addr );
 	}
 
 	void dspWrite( uint32_t addr, uint8_t data )
 	{
+		DSP1SetByte( addr, data );
 	}
 
+	uint8_t load8( const uint32_t address )
+	{
+		auto[ bank, bank_offset ] = getBankAndOffset( address );
+
+		if ( bank <= 0x1f && bank_offset <= 0x1fff )
+		{
+			return wRam[ 0x1fff & address ];
+		}
+		else if ( ( bank <= 0x3f || ( bank >= 0x80 && bank <= 0xbf ) ) && bank_offset >= 0x2140 && bank_offset <= 0x217F )
+		{
+			return spcReadPort( bank_offset & 0x3 );
+		}
+		else if ( bank <= 0x3f && ( bank_offset >= 0x6000 && bank_offset <= 0x7001 ) )
+		{
+			return dspRead( address );
+		}
+		else if ( bank <= 0x1f && bank_offset >= 0x8000 && bank_offset <= 0xffff )
+		{
+			return rom[ address ];
+		}
+		else if ( bank >= 0x20 && bank <= 0x3f && bank_offset <= 0x1fff )
+		{
+			return wRam[ 0x1fff & address ];
+		}
+		else if ( bank >= 0x20 && bank <= 0x3f && bank_offset >= 0x8000 && bank_offset <= 0xffff )
+		{
+			return rom[ address - 0x200000 ];
+		}
+		else if ( bank >= 0x40 && bank <= 0x7d && bank_offset <= 0xffff )
+		{
+			return rom[ address - 0x400000 ];
+		}
+		else if ( bank >= 0x7e && bank <= 0x7f && bank_offset <= 0xffff )
+		{
+			return wRam[ address - 0x7e0000 ];
+		}
+		else if ( bank >= 0xc0 && bank <= 0xfd && bank_offset <= 0xffff )
+		{
+			return rom[ address - 0xc00000 ];
+		}
+		else if ( bank >= 0xfe && bank <= 0xff && bank_offset <= 0xffff )
+		{
+			return rom[ address - 0xc00000 ];
+		}
+		else if ( bank >= 0x80 && bank <= 0x9f && bank_offset <= 0x1fff )
+		{
+			return wRam[ 0x1fff & address ];
+		}
+		else if ( bank >= 0xa0 && bank <= 0xbf && bank_offset <= 0x1fff )
+		{
+			return wRam[ 0x1fff & address ];
+		}
+
+		return 0;
+	}
+
+	uint16_t load16( const uint32_t address )
+	{
+		uint16_t low = load8( address );
+		uint16_t high  = load8( address + 1 );
+		return ( high << 8 ) | low;
+	}
+
+	void store8( const uint32_t address, uint8_t value )
+	{
+		auto[ bank, bank_offset ] = getBankAndOffset( address );
+
+		if ( bank <= 0x1f && bank_offset <= 0x1fff )
+		{
+			wRam[ 0x1fff & address ] = value;
+		}
+		else if ( ( bank <= 0x3f || ( bank >= 0x80 && bank <= 0xbf ) ) && bank_offset >= 0x2140 && bank_offset <= 0x217F )
+		{
+			spcWritePort( bank_offset & 0x3, value );
+		}
+		else if ( bank <= 0x3f && ( bank_offset >= 0x6000 && bank_offset <= 0x7001 ) )
+		{
+			dspWrite( address, value );
+		}
+		else if ( bank >= 0x20 && bank <= 0x3f && bank_offset <= 0x1fff )
+		{
+			wRam[ 0x1fff & address ] = value;
+		}
+		else if ( bank >= 0x7e && bank <= 0x7f && bank_offset <= 0xffff )
+		{
+			wRam[ address - 0x7e0000 ] = value;
+		}
+		else if ( bank >= 0x80 && bank <= 0x9f && bank_offset <= 0x1fff )
+		{
+			wRam[ 0x1fff & address ] = value;
+		}
+		else if ( bank >= 0xa0 && bank <= 0xbf && bank_offset <= 0x1fff )
+		{
+			wRam[ 0x1fff & address ] = value;
+		}
+	}
+
+	void store16( const uint32_t address, uint16_t value )
+	{
+		store8( address, static_cast<uint8_t>( value & 0xff ) );
+		store8( address + 1, static_cast<uint8_t>( value >> 8 ) );
+	}
 }
 
 void LoadLog( const char* logPath )
@@ -325,8 +431,9 @@ void LoadLog( const char* logPath )
 		int16_t dp = static_cast<int16_t>( strtol( line.substr( line.find( "D:" ) + 2, 4 ).c_str(), NULL, 16 ) );
 		int8_t db = static_cast<int8_t>( strtol( line.substr( line.find( "DB:" ) + 3, 2 ).c_str(), NULL, 16 ) );
 		int16_t sp = static_cast<int16_t>( strtol( line.substr( line.find( "S:" ) + 2, 4 ).c_str(), NULL, 16 ) );
+		std::string p = line.substr( line.find( "P:" ) + 2, 9 );
 
-		logState.push_back( { line, a, x, y, dp, db, sp } );
+		logState.push_back( { line, a, x, y, dp, db, sp, p } );
 	}
 }
 
@@ -396,6 +503,8 @@ int main( int argc, char** argv )
 	}
 	snesSPC.reset();
 	snesSPC.end_frame( 1024000 / 2 );
+
+	ResetDSP();
 
 	start();
 

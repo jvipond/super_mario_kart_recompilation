@@ -23,6 +23,7 @@ public:
 	void InitialiseBasicBlocksFromLabelNames();
 	void GenerateCode();
 	void EnforceFunctionEntryBlocksConstraints();
+	void SetupNmiCall();
 	void AddOffsetToInstructionString( const uint32_t offset, const std::string& stringGlobalVariable );
 	void AddInstructionStringGlobalVariables();
 	void SelectBlock( llvm::BasicBlock* basicBlock );
@@ -119,6 +120,8 @@ public:
 	void PerformInc( void );
 	void PerformInc16( llvm::Value* ptr );
 	void PerformInc8( llvm::Value* ptr );
+	void PerformInc16( llvm::Value* address, llvm::Value* value );
+	void PerformInc8( llvm::Value* address, llvm::Value* value );
 	void PerformIncAbs( const uint32_t address );
 	void PerformIncDir( const uint32_t address );
 	void PerformDec( void );
@@ -126,6 +129,8 @@ public:
 	void PerformDecDir( const uint32_t address );
 	void PerformDec16( llvm::Value* ptr );
 	void PerformDec8( llvm::Value* ptr );
+	void PerformDec16( llvm::Value* address, llvm::Value* value );
+	void PerformDec8( llvm::Value* address, llvm::Value* value );
 	void PerformInx( void );
 	void PerformDex( void );
 	void PerformIny( void );
@@ -135,21 +140,29 @@ public:
 	void PerformAslDir( const uint32_t address );
 	void PerformAsl16( llvm::Value* ptr );
 	void PerformAsl8( llvm::Value* ptr );
+	void PerformAsl16( llvm::Value* address, llvm::Value* value );
+	void PerformAsl8( llvm::Value* address, llvm::Value* value );
 	void PerformLsr( void );
 	void PerformLsrAbs( const uint32_t address );
 	void PerformLsrDir( const uint32_t address );
 	void PerformLsr16( llvm::Value* ptr );
 	void PerformLsr8( llvm::Value* ptr );
+	void PerformLsr16( llvm::Value* address, llvm::Value* value );
+	void PerformLsr8( llvm::Value* address, llvm::Value* value );
 	void PerformRol( void );
 	void PerformRolAbs( const uint32_t address );
 	void PerformRolDir( const uint32_t address );
 	void PerformRol16( llvm::Value* ptr );
 	void PerformRol8( llvm::Value* ptr );
+	void PerformRol16( llvm::Value* address, llvm::Value* value );
+	void PerformRol8( llvm::Value* address, llvm::Value* value );
 	void PerformRor( void );
 	void PerformRorAbs( const uint32_t address );
 	void PerformRorDir( const uint32_t address );
 	void PerformRor16( llvm::Value* ptr );
 	void PerformRor8( llvm::Value* ptr );
+	void PerformRor16( llvm::Value* address, llvm::Value* value );
+	void PerformRor8( llvm::Value* address, llvm::Value* value );
 	void PerformTax( void );
 	void PerformTay( void );
 	void PerformTsx( void );
@@ -183,13 +196,9 @@ public:
 	llvm::Value* CreateLoadX8( void );
 	llvm::Value* CreateLoadY16( void );
 	llvm::Value* CreateLoadY8( void );
-	llvm::Value* wRamPtr16( const uint32_t offset );
 	llvm::Value* wRamPtr8( const uint32_t offset );
-	llvm::Value* romPtr16( const uint32_t offset );
 	llvm::Value* romPtr8( const uint32_t offset );
-	llvm::Value* wRamPtr16( llvm::Value* offset );
 	llvm::Value* wRamPtr8( llvm::Value* offset );
-	llvm::Value* romPtr16( llvm::Value* offset );
 	llvm::Value* romPtr8( llvm::Value* offset );
 	void PerformLdaLong( const uint32_t address );
 	void PerformLdaAbs( const uint32_t address );
@@ -230,20 +239,14 @@ public:
 	void PerformMvp( const uint32_t operand, const uint32_t instructionOffset, const std::string& instructionString );
 	void PerformMvp16( const uint32_t operand, const uint32_t instructionOffset, const std::string& instructionString );
 	void PerformMvp8( const uint32_t operand, const uint32_t instructionOffset, const std::string& instructionString );
-	llvm::Value* StaticLoad16( const uint32_t address );
-	llvm::Value* StaticLoad8( const uint32_t address );
-	llvm::Value* DynamicLoad16( llvm::Value* address );
-	llvm::Value* DynamicLoad8( llvm::Value* address );
-	void DynamicStore16( llvm::Value* address, llvm::Value* value );
-	void DynamicStore8( llvm::Value* address, llvm::Value* value );
 	void PerformTsbAbs( const uint32_t address );
 	void PerformTsbDir( const uint32_t address );
 	void PerformTrbAbs( const uint32_t address );
 	void PerformTrbDir( const uint32_t address );
-	void PerformTsb16( llvm::Value* ptr );
-	void PerformTsb8( llvm::Value* ptr );
-	void PerformTrb16( llvm::Value* ptr );
-	void PerformTrb8( llvm::Value* ptr );
+	void PerformTsb16( llvm::Value* address, llvm::Value* value );
+	void PerformTsb8( llvm::Value* address, llvm::Value* value );
+	void PerformTrb16( llvm::Value* address, llvm::Value* value );
+	void PerformTrb8( llvm::Value* address, llvm::Value* value );
 	void PerformBitAbs( const uint32_t address );
 	void PerformBitDir( const uint32_t address );
 	void PerformBit16( llvm::Value* value );
@@ -353,9 +356,6 @@ private:
 	llvm::GlobalVariable m_registerY;
 	llvm::GlobalVariable m_registerP;
 
-	llvm::GlobalVariable m_DynamicLoad8;
-	llvm::GlobalVariable m_DynamicLoad16;
-
 	static const uint32_t WRAM_SIZE = 0x20000;
 	llvm::GlobalVariable m_wRam;
 
@@ -365,15 +365,15 @@ private:
 	llvm::BasicBlock* m_CurrentBasicBlock;
 	llvm::Function* m_CycleFunction;
 	llvm::Function* m_PanicFunction;
-
-	llvm::Function* m_SPCWritePortFunction;
-	llvm::Function* m_SPCReadPortFunction;
-
-	llvm::Function* m_DSPWriteFunction;
-	llvm::Function* m_DSPReadFunction;
-
-	llvm::Function* m_ConvertRuntimeAddressFunction;
 	llvm::Function* m_UpdateInstructionOutput;
+
+	static const uint32_t WAIT_FOR_VBLANK_LOOP_LABEL_OFFSET = 0x805C;
+	static inline const std::string WAIT_FOR_VBLANK_LABEL_NAME = "CODE_80805C";
+
+	llvm::Function* m_Load8Function;
+	llvm::Function* m_Load16Function;
+	llvm::Function* m_Store8Function;
+	llvm::Function* m_Store16Function;
 };
 
 #endif // RECOMPILER_HPP
