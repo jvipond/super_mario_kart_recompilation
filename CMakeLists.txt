@@ -9,7 +9,7 @@ message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 set(CMAKE_CXX_STANDARD 17)
 
 set(recompiler_SOURCES Recompiler/main.cpp Recompiler/Recompiler.cpp Recompiler/Recompiler.hpp Recompiler/json.hpp Utils.hpp Utils.cpp)
-set(smk_SOURCES smk_main.cpp gl3w/src/gl3w.c imgui/imgui.h imgui/imgui.cpp imgui/imgui_impl_sdl.h imgui/imgui_impl_sdl.cpp imgui/imgui_impl_opengl3.h imgui/imgui_impl_opengl3.cpp imgui/imgui_internal.h imgui/imgui_widgets.cpp imgui/imgui_draw.cpp imgui/imgui_demo.cpp imgui/imgui_memory_editor.h Utils.hpp Utils.cpp spc/SNES_SPC.cpp spc/SNES_SPC.h spc/SNES_SPC_misc.cpp spc/SNES_SPC_state.cpp spc/SPC_CPU.h spc/SPC_DSP.cpp spc/SPC_DSP.h spc/blargg_common.h spc/blargg_config.h spc/blargg_endian.h spc/blargg_source.h dsp/dsp.h dsp/dsp1.cpp)
+set(smk_SOURCES smk_main.cpp gl3w/src/gl3w.c imgui/imgui.h imgui/imgui.cpp imgui/imgui_impl_sdl.h imgui/imgui_impl_sdl.cpp imgui/imgui_impl_opengl3.h imgui/imgui_impl_opengl3.cpp imgui/imgui_internal.h imgui/imgui_widgets.cpp imgui/imgui_draw.cpp imgui/imgui_demo.cpp imgui/imgui_memory_editor.h Utils.hpp Utils.cpp spc/SNES_SPC.cpp spc/SNES_SPC.h spc/SNES_SPC_misc.cpp spc/SNES_SPC_state.cpp spc/SPC_CPU.h spc/SPC_DSP.cpp spc/SPC_DSP.h spc/blargg_common.h spc/blargg_config.h spc/blargg_endian.h spc/blargg_source.h dsp/dsp.h dsp/dsp1.cpp dma/Dma.hpp dma/Dma.cpp smk_main.hpp)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/sdl2)
 find_package(SDL2 REQUIRED)

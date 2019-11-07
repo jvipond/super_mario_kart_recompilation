@@ -9,6 +9,7 @@
 #include "imgui/imgui_impl_sdl.h"
 #include "imgui/imgui_impl_opengl3.h"
 #include "imgui/imgui_memory_editor.h"
+#include "smk_main.hpp"
 #include <vector>
 #include <deque>
 #include <string>
@@ -16,6 +17,7 @@
 #include "spc/SNES_SPC.h"
 #include "dsp/dsp.h"
 #include "Utils.hpp"
+#include "dma/Dma.hpp"
 
 static constexpr bool compareToDebugLog = false;
 
@@ -93,11 +95,11 @@ extern "C"
 		}
 		instructionTrace.push_back( { pc, instructionString, rs, 1 } );
 
-		if ( pc == 0x80805A )
+		/*if ( pc == 0x80805A )
 		{
 			autoStep = false;
 			render = true;
-		}
+		}*/
 
 		if constexpr ( compareToDebugLog )
 		{
@@ -286,13 +288,13 @@ extern "C"
 		}
 	}
 
-	void spcWritePort( int32_t port, int32_t data )
+	void spcWritePort( const int32_t port, const int32_t data )
 	{
 		incrementCycleCount();
 		snesSPC.write_port( stime, port, data );
 	}
 
-	int32_t spcReadPort( int32_t port )
+	int32_t spcReadPort( const int32_t port )
 	{
 		incrementCycleCount();
 		return snesSPC.read_port( stime, port );
@@ -300,15 +302,18 @@ extern "C"
 
 	SDSP1 DSP1;
 	
-	uint8_t dspRead( uint32_t addr )
+	uint8_t dspRead( const uint32_t addr )
 	{
 		return DSP1GetByte( addr );
 	}
 
-	void dspWrite( uint32_t addr, uint8_t data )
+	void dspWrite( const uint32_t addr, const uint8_t data )
 	{
 		DSP1SetByte( addr, data );
 	}
+
+	uint32_t wRamPosition = 0;
+	DmaController dmaController;
 
 	uint8_t load8( const uint32_t address )
 	{
@@ -322,9 +327,19 @@ extern "C"
 		{
 			return spcReadPort( bank_offset & 0x3 );
 		}
+		else if ( ( bank <= 0x3f || ( bank >= 0x80 && bank <= 0xbf ) ) && bank_offset == 0x2180 )
+		{
+			uint8_t value = wRam[ wRamPosition ];
+			wRamPosition = ( wRamPosition + 1 ) & 0x1FFFF;
+			return value;
+		}
 		else if ( bank <= 0x3f && ( bank_offset >= 0x6000 && bank_offset <= 0x7001 ) )
 		{
 			return dspRead( address );
+		}
+		else if ( ( bank <= 0x3f || ( bank >= 0x80 && bank <= 0xbf ) ) && bank_offset >= 0x4300 )
+		{
+			return dmaController.Read( bank_offset );
 		}
 		else if ( bank <= 0x1f && bank_offset >= 0x8000 && bank_offset <= 0xffff )
 		{
@@ -373,7 +388,7 @@ extern "C"
 		return ( high << 8 ) | low;
 	}
 
-	void store8( const uint32_t address, uint8_t value )
+	void store8( const uint32_t address, const uint8_t value )
 	{
 		auto[ bank, bank_offset ] = getBankAndOffset( address );
 
@@ -384,6 +399,23 @@ extern "C"
 		else if ( ( bank <= 0x3f || ( bank >= 0x80 && bank <= 0xbf ) ) && bank_offset >= 0x2140 && bank_offset <= 0x217F )
 		{
 			spcWritePort( bank_offset & 0x3, value );
+		}
+		else if ( ( bank <= 0x3f || ( bank >= 0x80 && bank <= 0xbf ) ) && ( bank_offset >= 0x2180 && bank_offset <= 0x2183 ) )
+		{
+			switch ( address & 0xFFFF ) {
+			case 0x2180:
+				wRam[ wRamPosition ] = value;
+				wRamPosition = ( wRamPosition + 1 ) & 0x1FFFF;
+				break;
+
+			case 0x2181: wRamPosition = ( wRamPosition & 0x1FF00 ) | value; break;
+			case 0x2182: wRamPosition = ( wRamPosition & 0x100FF ) | ( value << 8 ); break;
+			case 0x2183: wRamPosition = ( wRamPosition & 0xFFFF ) | ( ( value & 0x01 ) << 16 ); break;
+			}
+		}
+		else if ( ( bank <= 0x3f || ( bank >= 0x80 && bank <= 0xbf ) ) && ( bank_offset == 0x420B || bank_offset == 0x420C || bank_offset >= 0x4300 ) )
+		{
+			dmaController.Write( bank_offset, value );
 		}
 		else if ( bank <= 0x3f && ( bank_offset >= 0x6000 && bank_offset <= 0x7001 ) )
 		{
@@ -407,10 +439,20 @@ extern "C"
 		}
 	}
 
-	void store16( const uint32_t address, uint16_t value )
+	void store16( const uint32_t address, const uint16_t value )
 	{
 		store8( address, static_cast<uint8_t>( value & 0xff ) );
 		store8( address + 1, static_cast<uint8_t>( value >> 8 ) );
+	}
+
+	void dmaWrite( const uint32_t address, const uint8_t value )
+	{
+		dmaController.Write( address, value );
+	}
+
+	uint8_t dmaRead( const uint32_t address )
+	{
+		return dmaController.Read( address );
 	}
 }
 
