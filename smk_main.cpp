@@ -21,6 +21,21 @@
 
 static constexpr bool compareToDebugLog = false;
 
+struct AluMulDivState
+{
+	//$4202-$4203
+	uint8_t wrmpya = 0xff;
+	uint8_t wrmpyb = 0xff;
+
+	//$4204-$4206
+	uint16_t wrdiva = 0xffff;
+	uint8_t wrdivb = 0xff;
+
+	//$4214-$4217
+	uint16_t rddiv = 0;
+	uint16_t rdmpy = 0;
+};
+
 extern "C"
 {
 	int16_t A = 0;
@@ -314,6 +329,7 @@ extern "C"
 
 	uint32_t wRamPosition = 0;
 	DmaController dmaController;
+	AluMulDivState aluMulDivState;
 
 	uint8_t load8( const uint32_t address )
 	{
@@ -332,6 +348,17 @@ extern "C"
 			uint8_t value = wRam[ wRamPosition ];
 			wRamPosition = ( wRamPosition + 1 ) & 0x1FFFF;
 			return value;
+		}
+		else if ( ( bank <= 0x3f || ( bank >= 0x80 && bank <= 0xbf ) ) && bank_offset >= 0x4214 && bank_offset <= 0x4217 )
+		{
+			switch ( bank_offset )
+			{
+			  case 0x4214: return aluMulDivState.rddiv >> 0;  //RDDIVL
+				case 0x4215: return aluMulDivState.rddiv >> 8;  //RDDIVH
+				case 0x4216: return aluMulDivState.rdmpy >> 0;  //RDMPYL
+				case 0x4217: return aluMulDivState.rdmpy >> 8;  //RDMPYH
+				default: return 0;
+			}
 		}
 		else if ( bank <= 0x3f && ( bank_offset >= 0x6000 && bank_offset <= 0x7001 ) )
 		{
@@ -411,6 +438,50 @@ extern "C"
 			case 0x2181: wRamPosition = ( wRamPosition & 0x1FF00 ) | value; break;
 			case 0x2182: wRamPosition = ( wRamPosition & 0x100FF ) | ( value << 8 ); break;
 			case 0x2183: wRamPosition = ( wRamPosition & 0xFFFF ) | ( ( value & 0x01 ) << 16 ); break;
+			}
+		}
+		else if ( ( bank <= 0x3f || ( bank >= 0x80 && bank <= 0xbf ) ) && ( bank_offset >= 0x4202 && bank_offset <= 0x4206 ) )
+		{
+			switch( bank_offset )
+			{
+			case 0x4202:  //WRMPYA
+				aluMulDivState.wrmpya = value;
+				return;
+
+			case 0x4203:  //WRMPYB
+				aluMulDivState.rdmpy = 0;
+
+				aluMulDivState.wrmpyb = value;
+				aluMulDivState.rddiv = aluMulDivState.wrmpyb << 8 | aluMulDivState.wrmpya;
+
+				aluMulDivState.rdmpy = aluMulDivState.wrmpya * aluMulDivState.wrmpyb;
+				return;
+
+			case 0x4204:  //WRDIVL
+				aluMulDivState.wrdiva = aluMulDivState.wrdiva & 0xff00 | value << 0;
+				return;
+
+			case 0x4205:  //WRDIVH
+				aluMulDivState.wrdiva = aluMulDivState.wrdiva & 0x00ff | value << 8;
+				return;
+
+			case 0x4206:  //WRDIVB
+				aluMulDivState.rdmpy = aluMulDivState.wrdiva;
+				aluMulDivState.wrdivb = value;
+
+				if ( aluMulDivState.wrdivb )
+				{
+					aluMulDivState.rddiv = aluMulDivState.wrdiva / aluMulDivState.wrdivb;
+					aluMulDivState.rdmpy = aluMulDivState.wrdiva % aluMulDivState.wrdivb;
+				}
+				else
+				{
+					aluMulDivState.rddiv = 0xffff;
+					aluMulDivState.rdmpy = aluMulDivState.wrdiva;
+				}
+				return;
+			default:
+				return;
 			}
 		}
 		else if ( ( bank <= 0x3f || ( bank >= 0x80 && bank <= 0xbf ) ) && ( bank_offset == 0x420B || bank_offset == 0x420C || bank_offset >= 0x4300 ) )
