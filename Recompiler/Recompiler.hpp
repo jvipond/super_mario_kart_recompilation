@@ -24,6 +24,8 @@ public:
 	void GenerateCode();
 	void EnforceFunctionEntryBlocksConstraints();
 	void SetupNmiCall();
+	void SetupIrqFunction();
+	void FixReturnAddressManipulationFunctions();
 	void AddOffsetToInstructionString( const uint32_t offset, const std::string& stringGlobalVariable );
 	void AddInstructionStringGlobalVariables();
 	void SelectBlock( llvm::BasicBlock* basicBlock );
@@ -31,242 +33,261 @@ public:
 	const std::unordered_map<uint32_t, std::unordered_map<std::string, bool> >& GetLabelsToFunctions() const { return m_LabelsToFunctions; }
 	const std::unordered_map<std::string, llvm::Function*>& GetFunctions() const { return m_Functions; }
 
-	llvm::BasicBlock* CreateBlock( const char* name );
-	void CreateBranch( llvm::BasicBlock* basicBlock );
 	void SetInsertPoint( llvm::BasicBlock* basicBlock );
-	auto CreateRegisterWidthTest( const uint64_t flag );
-	void PerformOra16( llvm::Value* value );
-	void PerformOra8( llvm::Value* value );
-	void PerformAnd16( llvm::Value* value );
-	void PerformAnd8( llvm::Value* value );
-	void PerformEor16( llvm::Value* value );
-	void PerformEor8( llvm::Value* value );
-	void PerformLda16( llvm::Value* value );
-	void PerformLda8( llvm::Value* value );
-	void PerformLdx16( llvm::Value* value );
-	void PerformLdx8( llvm::Value* value );
-	void PerformLdy16( llvm::Value* value );
-	void PerformLdy8( llvm::Value* value );
-	void PerformCmp16( llvm::Value* lValue, llvm::Value* rValue );
-	void PerformCmp8( llvm::Value* lValue, llvm::Value* rValue );
-	void PerformAdc16( llvm::Value* value );
-	void PerformAdc8( llvm::Value* value );
-	void PerformAdcAbs( const uint32_t address );
-	void PerformAdcAbsIdxX( const uint32_t address );
-	void PerformAdcDir( const uint32_t address );
-	void PerformAdcLong( const uint32_t address );
-	void PerformSbcAbs( const uint32_t address );
-	void PerformSbcAbsIdxX( const uint32_t address );
-	void PerformSbcDir( const uint32_t address );
-	void PerformSbcDirIdxX( const uint32_t address );
-	void PerformAdcLongIdxX( const uint32_t address );
-	void PerformSbcLongIdxX( const uint32_t address );
-	void PerformSbc16( llvm::Value* value );
-	void PerformSbc8( llvm::Value* value );
-	void PerformBit16Imm( llvm::Value* value );
-	void PerformBit8Imm( llvm::Value* value );
-	void TestAndSetZero16( llvm::Value* value );
-	void TestAndSetZero8( llvm::Value* value );
-	void TestAndSetNegative16( llvm::Value* value );
-	void TestAndSetNegative8( llvm::Value* value );
-	void TestAndSetCarryAddition16( llvm::Value* value );
-	void TestAndSetCarryAddition8( llvm::Value* value );
-	void TestAndSetOverflowAddition16( llvm::Value* value );
-	void TestAndSetOverflowAddition8( llvm::Value* value );
-	void TestAndSetCarrySubtraction16( llvm::Value* value );
-	void TestAndSetCarrySubtraction8( llvm::Value* value );
-	void TestAndSetOverflow16( llvm::Value* value );
-	void TestAndSetOverflow8( llvm::Value* value );
-	void PerformXba();
-	void PerformTcs();
-	void PerformTcd();
-	void PerformTdc();
-	void PerformTsc();
-	void PerformRtl();
-	void PerformRts();
-	void PerformRti();
-	void PerformPea( llvm::Value* value );
-	void PerformBra( const std::string& labelName, const std::string& functionName, llvm::Value* newPC );
-	void PerformJmpAbs( const std::string& labelName, const std::string& functionName, const uint32_t jumpAddress );
-	void PerformJmpLng( const std::string& labelName, const std::string& functionName, const uint32_t jumpAddress );
-	void PerformJsr( const uint32_t instructionOffset, const uint32_t jumpAddress );
-	void PerformJsrAbsIdxX( const uint32_t instructionOffset, const uint32_t jumpAddress );
-	void PerformJmpAbsIdxX( const uint32_t instructionOffset, const std::string& functionName, const uint32_t jumpAddress );
-	void PerformJsl( const uint32_t instructionOffset, const uint32_t jumpAddress );
-	void PerformBcc( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBcs( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBeq( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBne( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBmi( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBpl( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBvc( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformBvs( const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void AddConditionalBranch( llvm::Value* cond, const std::string& labelName, const std::string& functionName, llvm::Value* pcBranchTaken, llvm::Value* pcBranchNotTaken );
-	void PerformSep( llvm::Value* value );
-	void PerformRep( llvm::Value* value );
-	void PerformPha( void );
-	void PerformPla( void );
-	void PerformPhy( void );
-	void PerformPly( void );
-	void PerformPhx( void );
-	void PerformPlx( void );
-	void PerformPhb( void );
-	void PerformPhd( void );
-	void PerformPhk( void );
-	void PerformPhp( void );
-	void PerformPlb( void );
-	void PerformPld( void );
-	void PerformPlp( void );
-	void PerformInc( void );
-	void PerformInc16( llvm::Value* ptr );
-	void PerformInc8( llvm::Value* ptr );
-	void PerformInc16( llvm::Value* address, llvm::Value* value );
-	void PerformInc8( llvm::Value* address, llvm::Value* value );
-	void PerformIncAbs( const uint32_t address );
-	void PerformIncDir( const uint32_t address );
-	void PerformDec( void );
-	void PerformDecAbs( const uint32_t address );
-	void PerformDecDir( const uint32_t address );
-	void PerformDec16( llvm::Value* ptr );
-	void PerformDec8( llvm::Value* ptr );
-	void PerformDec16( llvm::Value* address, llvm::Value* value );
-	void PerformDec8( llvm::Value* address, llvm::Value* value );
-	void PerformInx( void );
-	void PerformDex( void );
-	void PerformIny( void );
-	void PerformDey( void );
-	void PerformAsl( void );
-	void PerformAslAbs( const uint32_t address );
-	void PerformAslDir( const uint32_t address );
-	void PerformAsl16( llvm::Value* ptr );
-	void PerformAsl8( llvm::Value* ptr );
-	void PerformAsl16( llvm::Value* address, llvm::Value* value );
-	void PerformAsl8( llvm::Value* address, llvm::Value* value );
-	void PerformLsr( void );
-	void PerformLsrAbs( const uint32_t address );
-	void PerformLsrDir( const uint32_t address );
-	void PerformLsr16( llvm::Value* ptr );
-	void PerformLsr8( llvm::Value* ptr );
-	void PerformLsr16( llvm::Value* address, llvm::Value* value );
-	void PerformLsr8( llvm::Value* address, llvm::Value* value );
-	void PerformRol( void );
-	void PerformRolAbs( const uint32_t address );
-	void PerformRolDir( const uint32_t address );
-	void PerformRol16( llvm::Value* ptr );
-	void PerformRol8( llvm::Value* ptr );
-	void PerformRol16( llvm::Value* address, llvm::Value* value );
-	void PerformRol8( llvm::Value* address, llvm::Value* value );
-	void PerformRor( void );
-	void PerformRorAbs( const uint32_t address );
-	void PerformRorDir( const uint32_t address );
-	void PerformRor16( llvm::Value* ptr );
-	void PerformRor8( llvm::Value* ptr );
-	void PerformRor16( llvm::Value* address, llvm::Value* value );
-	void PerformRor8( llvm::Value* address, llvm::Value* value );
-	void PerformTax( void );
-	void PerformTay( void );
-	void PerformTsx( void );
-	void PerformTxa( void );
-	void PerformTxs( void );
-	void PerformTxy( void );
-	void PerformTya( void );
-	void PerformTyx( void );
-	void PerformRegisterTransfer( llvm::Value* sourceRegister, llvm::Value* destinationRegister );
-	llvm::Value* PerformRegisterTransfer16( llvm::Value* sourceRegister, llvm::Value* destinationRegister );
-	llvm::Value* PerformRegisterTransfer8( llvm::Value* sourceRegister, llvm::Value* destinationRegister );
-	llvm::Value* ComputeNewPC( llvm::Value* payloadSize );
-	void PerformRomCycle( llvm::Value* value, const bool implemented = true );
-	void PerformRomCycle( llvm::Value* value, llvm::Value* newPc, const bool implemented = true );
-	void PerformUpdateInstructionOutput( const uint32_t offset, const std::string& instructionString );
-	llvm::Value* PullByteFromStack();
-	llvm::Value* PullWordFromStack();
-	void PushByteToStack( llvm::Value* value );
-	void PushWordToStack( llvm::Value* value );
-	void ClearCarry();
-	void SetCarry();
-	void ClearDecimal();
-	void SetDecimal();
-	void ClearInterrupt();
-	void SetInterrupt();
-	void ClearOverflow();
-	llvm::Value* CreateLoadA16( void );
-	llvm::Value* CreateLoadA8( void );
-	llvm::Value* CreateLoadB8( void );
-	llvm::Value* CreateLoadX16( void );
-	llvm::Value* CreateLoadX8( void );
-	llvm::Value* CreateLoadY16( void );
-	llvm::Value* CreateLoadY8( void );
-	llvm::Value* wRamPtr8( const uint32_t offset );
-	llvm::Value* romPtr8( const uint32_t offset );
-	llvm::Value* wRamPtr8( llvm::Value* offset );
-	llvm::Value* romPtr8( llvm::Value* offset );
-	void PerformLdaLong( const uint32_t address );
-	void PerformLdaAbs( const uint32_t address );
-	void PerformLdaAbsIdxX( const uint32_t address );
-	void PerformLdaAbsIdxY( const uint32_t address );
-	void PerformLdaDir( const uint32_t address );
-	void PerformLdaDirIdxX( const uint32_t address );
-	void PerformLdaLongIdxX( const uint32_t address );
-	void PerformLdaDirIndLngIdxY( const uint32_t address );
-	void PerformLdxAbs( const uint32_t address );
-	void PerformLdxAbsIdxY( const uint32_t address );
-	void PerformLdxDir( const uint32_t address );
-	void PerformLdxDirIdxY( const uint32_t address );
-	void PerformLdyAbs( const uint32_t address );
-	void PerformLdyAbsIdxX( const uint32_t address );
-	void PerformLdyDir( const uint32_t address );
-	void PerformLdyDirIdxX( const uint32_t address );
-	void PerformStaLong( const uint32_t address );
-	void PerformStaLongIdxX( const uint32_t address );
-	void PerformStaAbs( const uint32_t address );
-	void PerformStaAbsIdxX( const uint32_t address );
-	void PerformStaAbsIdxY( const uint32_t address );
-	void PerformStxAbs( const uint32_t address );
-	void PerformStyAbs( const uint32_t address );
-	void PerformStzAbs( const uint32_t address );
-	void PerformStzAbsIdxX( const uint32_t address );
-	void PerformStaDir( const uint32_t address );
-	void PerformStaDirIdxX( const uint32_t address );
-	void PerformStxDir( const uint32_t address );
-	void PerformStxDirIdxY( const uint32_t address );
-	void PerformStyDir( const uint32_t address );
-	void PerformStyDirIdxX( const uint32_t address );
-	void PerformStzDir( const uint32_t address );
-	void PerformStzDirIdxX( const uint32_t address );
-	void PerformMvn( const uint32_t operand, const uint32_t instructionOffset, const std::string& instructionString );
-	void PerformMvn16( const uint32_t operand, const uint32_t instructionOffset, const std::string& instructionString );
-	void PerformMvn8( const uint32_t operand, const uint32_t instructionOffset, const std::string& instructionString );
-	void PerformMvp( const uint32_t operand, const uint32_t instructionOffset, const std::string& instructionString );
-	void PerformMvp16( const uint32_t operand, const uint32_t instructionOffset, const std::string& instructionString );
-	void PerformMvp8( const uint32_t operand, const uint32_t instructionOffset, const std::string& instructionString );
-	void PerformTsbAbs( const uint32_t address );
-	void PerformTsbDir( const uint32_t address );
-	void PerformTrbAbs( const uint32_t address );
-	void PerformTrbDir( const uint32_t address );
-	void PerformTsb16( llvm::Value* address, llvm::Value* value );
-	void PerformTsb8( llvm::Value* address, llvm::Value* value );
-	void PerformTrb16( llvm::Value* address, llvm::Value* value );
-	void PerformTrb8( llvm::Value* address, llvm::Value* value );
-	void PerformBitAbs( const uint32_t address );
-	void PerformBitDir( const uint32_t address );
-	void PerformBit16( llvm::Value* value );
-	void PerformBit8( llvm::Value* value );
-	void PerformAndAbs( const uint32_t address );
-	void PerformAndDir( const uint32_t address );
-	void PerformEorAbs( const uint32_t address );
-	void PerformEorDir( const uint32_t address );
-	void PerformEorDirIdxX( const uint32_t address );
-	void PerformOraAbs( const uint32_t address );
-	void PerformOraAbsIdxY( const uint32_t address );
-	void PerformOraDir( const uint32_t address );
-	void PerformCmpAbs( const uint32_t address );
-	void PerformCmpDir( const uint32_t address );
-	void PerformCpxAbs( const uint32_t address );
-	void PerformCpxDir( const uint32_t address );
-	void PerformCpyAbs( const uint32_t address );
-	void PerformCpyDir( const uint32_t address );
+	
+	void PerformRomCycle( llvm::Value* value );
+	void PerformUpdateInstructionOutput( const uint32_t offset, const uint32_t pc, const std::string& instructionString );
 
 private:
+	llvm::Value* CombineTo16( llvm::Value* low8, llvm::Value* high8 );
+	llvm::Value* CombineTo32( llvm::Value* low8, llvm::Value* mid8, llvm::Value* high8 );
+	auto Recompiler::ConvertTo8( llvm::Value* value16 );
+	auto Recompiler::GetLowHighPtrFromPtr16( llvm::Value* ptr16 );
+
+	llvm::Value* ReadDirect( llvm::Value* address );
+	llvm::Value* ReadDirectNative( llvm::Value* address );
+	void WriteDirect( llvm::Value* address, llvm::Value* value );
+	llvm::Value* ReadBank( llvm::Value* address );
+	void WriteBank( llvm::Value* address, llvm::Value* value );
+	llvm::Value* ReadLong( llvm::Value* address );
+	void WriteLong( llvm::Value* address, llvm::Value* value );
+	llvm::Value* ReadStack( llvm::Value* address );
+	void WriteStack( llvm::Value* address, llvm::Value* value );
+	llvm::Value* Pull();
+	llvm::Value* PullNative();
+	void Push( llvm::Value* value8 );
+	void PushNative( llvm::Value* value8 );
+
+	llvm::Value* Read8( llvm::Value* address );
+	void Write8( llvm::Value* address, llvm::Value* value );
+
+	llvm::Value* LoadRegister32( llvm::Value* value );
+	llvm::Value* CreateDirectAddress( llvm::Value* address );
+	llvm::Value* CreateDirectEmulationAddress( llvm::Value* address );
+	llvm::Value* CreateBankAddress( llvm::Value* address );
+	llvm::Value* CreateStackAddress( llvm::Value* address );
+
+	using Operation = llvm::Value* ( Recompiler::* )( llvm::Value* );
+
+	void InstructionImpliedModify8( Operation op, llvm::Value* ptr16 );
+	void InstructionImpliedModify16( Operation op, llvm::Value* ptr16 );
+	void InstructionBankModify8( Operation op, llvm::Value* address32 );
+	void InstructionBankModify16( Operation op, llvm::Value* address32 );
+	void InstructionBankIndexedModify8( Operation op, llvm::Value* address16 );
+	void InstructionBankIndexedModify16( Operation op, llvm::Value* address16 );
+	void InstructionDirectModify8( Operation op, llvm::Value* address32 );
+	void InstructionDirectModify16( Operation op, llvm::Value* address32 );
+	void InstructionDirectIndexedModify8( Operation op, llvm::Value* address16 );
+	void InstructionDirectIndexedModify16( Operation op, llvm::Value* address16 );
+	
+	void InstructionImmediateRead8( Operation op, llvm::Value* operand8 );
+	void InstructionImmediateRead16( Operation op, llvm::Value* operand16 );
+	void InstructionBankRead8( Operation op, llvm::Value* address32 );
+	void InstructionBankRead16( Operation op, llvm::Value* address32 );
+	void InstructionBankRead8( Operation op, llvm::Value* address16, llvm::Value* I16 );
+	void InstructionBankRead16( Operation op, llvm::Value* address16, llvm::Value* I16 );
+	void InstructionLongRead8( Operation op, llvm::Value* address32, llvm::Value* I16 );
+	void InstructionLongRead16( Operation op, llvm::Value* address32, llvm::Value* I16 );
+	void InstructionDirectRead8( Operation op, llvm::Value* address32 );
+	void InstructionDirectRead16( Operation op, llvm::Value* address32 );
+	void InstructionDirectRead8( Operation op, llvm::Value* address16, llvm::Value* I16 );
+	void InstructionDirectRead16( Operation op, llvm::Value* address16, llvm::Value* I16 );
+	void InstructionIndirectRead8( Operation op, llvm::Value* address32 );
+	void InstructionIndirectRead16( Operation op, llvm::Value* address32 );
+	void InstructionIndexedIndirectRead8( Operation op, llvm::Value* address32 );
+	void InstructionIndexedIndirectRead16( Operation op, llvm::Value* address32 );
+	void InstructionIndirectIndexedRead8( Operation op, llvm::Value* address32 );
+	void InstructionIndirectIndexedRead16( Operation op, llvm::Value* address32 );
+	void InstructionIndirectLongRead8( Operation op, llvm::Value* address32, llvm::Value* I16 );
+	void InstructionIndirectLongRead16( Operation op, llvm::Value* address32, llvm::Value* I16 );
+	void InstructionStackRead8( Operation op, llvm::Value* address32 );
+	void InstructionStackRead16( Operation op, llvm::Value* address32 );
+	void InstructionIndirectStackRead8( Operation op, llvm::Value* address32 );
+	void InstructionIndirectStackRead16( Operation op, llvm::Value* address32 );
+
+	void InstructionBankWrite8( llvm::Value* address32, llvm::Value* value );
+	void InstructionBankWrite16( llvm::Value* address32, llvm::Value* low8, llvm::Value* high8 );
+	void InstructionBankWrite8( llvm::Value* address32, llvm::Value* I16, llvm::Value* value );
+	void InstructionBankWrite16( llvm::Value* address32, llvm::Value* I16, llvm::Value* low8, llvm::Value* high8 );
+	void InstructionLongWrite8( llvm::Value* address32, llvm::Value* I16, llvm::Value* value );
+	void InstructionLongWrite16( llvm::Value* address32, llvm::Value* I16, llvm::Value* low8, llvm::Value* high8 );
+	void InstructionDirectWrite8( llvm::Value* address32, llvm::Value* value );
+	void InstructionDirectWrite16( llvm::Value* address32, llvm::Value* low8, llvm::Value* high8 );
+	void InstructionDirectWrite8( llvm::Value* address32, llvm::Value* I16, llvm::Value* value );
+	void InstructionDirectWrite16( llvm::Value* address32, llvm::Value* I16, llvm::Value* low8, llvm::Value* high8 );
+	void InstructionIndirectWrite8( llvm::Value* address32, llvm::Value* value );
+	void InstructionIndirectWrite16( llvm::Value* address32, llvm::Value* low8, llvm::Value* high8 );
+	void InstructionIndexedIndirectWrite8( llvm::Value* address32, llvm::Value* value );
+	void InstructionIndexedIndirectWrite16( llvm::Value* address32, llvm::Value* low8, llvm::Value* high8 );
+	void InstructionIndirectIndexedWrite8( llvm::Value* address32, llvm::Value* value );
+	void InstructionIndirectIndexedWrite16( llvm::Value* address32, llvm::Value* low8, llvm::Value* high8 );
+	void InstructionIndirectLongWrite8( llvm::Value* address32, llvm::Value* I16, llvm::Value* value );
+	void InstructionIndirectLongWrite16( llvm::Value* address32, llvm::Value* I16, llvm::Value* low8, llvm::Value* high8 );
+	void InstructionStackWrite8( llvm::Value* address32, llvm::Value* value );
+	void InstructionStackWrite16( llvm::Value* address32, llvm::Value* low8, llvm::Value* high8 );
+	void InstructionIndirectStackWrite8( llvm::Value* address32, llvm::Value* value );
+	void InstructionIndirectStackWrite16( llvm::Value* address32, llvm::Value* low8, llvm::Value* high8 );
+
+	void InstructionBitImmediate8( llvm::Value* operand8 );
+	void InstructionBitImmediate16( llvm::Value* operand16 );
+	void InstructionTransfer8( llvm::Value* sourceRegisterPtr, llvm::Value* destinationRegisterPtr );
+	void InstructionTransfer16( llvm::Value* sourceRegisterPtr, llvm::Value* destinationRegisterPtr );
+	void InstructionTransferSX8();
+	void InstructionTransferSX16();
+	void InstructionPush8( llvm::Value* value8 );
+	void InstructionPush16( llvm::Value* low8, llvm::Value* high8 );
+	void InstructionPull8( llvm::Value* register16Ptr );
+	void InstructionPull16( llvm::Value* register16Ptr );
+	void InstructionBlockMove8( llvm::Value* sourceBank32, llvm::Value* destinationBank32, llvm::Value* adjust8, llvm::BasicBlock* blockMove, llvm::BasicBlock* endBlock );
+	void InstructionBlockMove16( llvm::Value* sourceBank32, llvm::Value* destinationBank32, llvm::Value* adjust16, llvm::BasicBlock* blockMove, llvm::BasicBlock* endBlock );
+
+	enum class RegisterModeFlag
+	{
+		REGISTER_MODE_FLAG_M,
+		REGISTER_MODE_FLAG_X
+	};
+	
+	void PerformImpliedModifyInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* ptr );
+	void PerformBankModifyInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformBankIndexedModifyInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address16 );
+	void PerformDirectModifyInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformDirectIndexedModifyInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address16 );
+
+	void PerformImmediateReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* operand16 );
+	void PerformBankReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformBankReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address16, llvm::Value* I );
+	void PerformLongReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* I );
+	void PerformDirectReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformDirectReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address16, llvm::Value* I16 );
+	void PerformIndirectReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformIndexedIndirectReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformIndirectIndexedReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformIndirectLongReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* I16 );
+	void PerformStackReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformIndirectStackReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 );
+
+	void PerformBankWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* value16 );
+	void PerformBankWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* I16, llvm::Value* value16 );
+	void PerformLongWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* I16 );
+	void PerformDirectWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* value16 );
+	void PerformDirectWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* I16, llvm::Value* value16 );
+	void PerformIndirectWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformIndexedIndirectWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformIndirectIndexedWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformIndirectLongWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* I16 );
+	void PerformStackWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32 );
+	void PerformIndirectStackWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32 );
+
+	void PerformBitImmediateInstruction( RegisterModeFlag modeFlag, llvm::Value* operand16 );
+	void PerformSetFlagInstruction( llvm::Value* flag );
+	void PerformClearFlagInstruction( llvm::Value* flag );
+	void PerformExchangeCEInstruction();
+	void PerformExchangeBAInstruction();
+	void PerformResetPInstruction( llvm::Value* operand8 );
+	void PerformSetPInstruction( llvm::Value* operand8 );
+	void PerformTransferInstruction( RegisterModeFlag modeFlag, llvm::Value* sourceRegisterPtr, llvm::Value* destinationRegisterPtr );
+	void PerformTransfer16Instruction( llvm::Value* sourceRegisterPtr, llvm::Value* destinationRegisterPtr );
+	void PerformTransferCSInstruction();
+	void PerformTransferSXInstruction( RegisterModeFlag modeFlag );
+	void PerformTransferXSInstruction();
+	void PerformPushInstruction( RegisterModeFlag modeFlag, llvm::Value* value16 );
+	void PerformPush8Instruction( llvm::Value* value8 );
+	void PerformPushDInstruction();
+	void PerformPullInstruction( RegisterModeFlag modeFlag, llvm::Value* register16Ptr );
+	void PerformPullDInstruction();
+	void PerformPullBInstruction();
+	void PerformPullPInstruction();
+	void PerformPushEffectiveAddressInstruction( llvm::Value* operand16 );
+	void PerformPushEffectiveIndirectAddressInstruction( llvm::Value* address32 );
+	void PerformPushEffectiveRelativeAddressInstruction( llvm::Value* operand16 );
+	void PerformBlockMoveInstruction( RegisterModeFlag modeFlag, llvm::Value* operand32, llvm::Value* adjust16 );
+	
+	void PerformProcessorStatusRegisterForcedConfiguration();
+	void PerformStackPointerEmulationFlagForcedConfiguration();
+
+	void PerformBranchInstruction( llvm::Value* cond, const std::string& labelName, const std::string& functionName );
+	void PerformJumpInstruction( const std::string& labelName, const std::string& functionName );
+	void InsertJumpTable( llvm::Value* switchValue, const uint32_t instructionOffset, const std::string& functionName );
+	void PerformJumpIndirectInstruction( const uint32_t instructionOffset, llvm::Value* operand16, const std::string& functionName );
+	void PerformJumpIndexedIndirectInstruction( const uint32_t instructionOffset, llvm::Value* operand16, const std::string& functionName );
+	void PerformJumpIndirectLongInstruction( const uint32_t instructionOffset, llvm::Value* operand16, const std::string& functionName );
+
+	void InsertFunctionCall( const uint32_t instructionOffset );
+	void PerformCallShortInstruction( const uint32_t instructionOffset );
+	void PerformCallLongInstruction( const uint32_t instructionOffset );
+	void PerformCallIndexedIndirectInstruction( const uint32_t instructionOffset, llvm::Value* operand16 );
+
+	void PerformReturnInterruptInstruction();
+	void PerformReturnShortInstruction();
+	void PerformReturnLongInstruction();
+
+	llvm::Value* GetPBPC32();
+
+	llvm::Value* GetConstant( uint32_t value, uint32_t bitWidth, bool isSigned );
+	llvm::Value* TestBits8( llvm::Value* lhs, uint8_t rhs );
+	llvm::Value* TestBits16( llvm::Value* lhs, uint16_t rhs );
+	llvm::Value* TestBits32( llvm::Value* lhs, uint32_t rhs );
+
+	llvm::Value* ASL8( llvm::Value* value );
+	llvm::Value* ASL16( llvm::Value* value );
+	llvm::Value* BIT8( llvm::Value* value );
+	llvm::Value* BIT16( llvm::Value* value );
+	llvm::Value* DEC8( llvm::Value* value );
+	llvm::Value* DEC16( llvm::Value* value );
+	llvm::Value* INC8( llvm::Value* value );
+	llvm::Value* INC16( llvm::Value* value );
+	llvm::Value* ROL8( llvm::Value* value );
+	llvm::Value* ROL16( llvm::Value* value );
+	llvm::Value* LSR8( llvm::Value* value );
+	llvm::Value* LSR16( llvm::Value* value );
+	llvm::Value* ROR8( llvm::Value* value );
+	llvm::Value* ROR16( llvm::Value* value );
+	llvm::Value* TSB8( llvm::Value* value );
+	llvm::Value* TSB16( llvm::Value* value );
+	llvm::Value* TRB8( llvm::Value* value );
+	llvm::Value* TRB16( llvm::Value* value );
+	llvm::Value* ORA8( llvm::Value* value );
+	llvm::Value* ORA16( llvm::Value* value );
+	llvm::Value* AND8( llvm::Value* value );
+	llvm::Value* AND16( llvm::Value* value );
+	llvm::Value* EOR8( llvm::Value* value );
+	llvm::Value* EOR16( llvm::Value* value );
+	llvm::Value* LDY8( llvm::Value* value );
+	llvm::Value* LDY16( llvm::Value* value );
+	llvm::Value* LDX8( llvm::Value* value );
+	llvm::Value* LDX16( llvm::Value* value );
+	llvm::Value* LDA8( llvm::Value* value );
+	llvm::Value* LDA16( llvm::Value* value );
+	llvm::Value* CPY8( llvm::Value* value );
+	llvm::Value* CPY16( llvm::Value* value );
+	llvm::Value* CPX8( llvm::Value* value );
+	llvm::Value* CPX16( llvm::Value* value );
+	llvm::Value* CMP8( llvm::Value* value );
+	llvm::Value* CMP16( llvm::Value* value );
+	llvm::Value* ADC8( llvm::Value* value );
+	llvm::Value* ADC16( llvm::Value* value );
+	llvm::Value* SBC8( llvm::Value* value );
+	llvm::Value* SBC16( llvm::Value* value );
+
+	auto CreateRegisterFlagTestBlock( llvm::Value* flagPtr );
+	auto CreateCondTestThenElseBlock( llvm::Value* cond );
+	auto CreateCondTestThenBlock( llvm::Value* cond );
+	void InsertBlockMoveInstructionBlock( llvm::Value* sourceBank32, llvm::Value* destinationBank32 );
+
+	llvm::Value* OrAllValues( llvm::Value* v );
+
+	template<typename... T>
+	auto OrAllValues( llvm::Value* s, T... ts );
+
+	llvm::Value* AddAllValues( llvm::Value* v );
+
+	template<typename... T>
+	auto AddAllValues( llvm::Value* s, T... ts );
+
+	llvm::Value* LoadFlag8( llvm::Value* flagPtr );
+	llvm::Value* GetProcessorStatusRegisterValueFromFlags();
+	void SetProcessorStatusFlagsFromValue( llvm::Value* status8 );
+
 	class Label
 	{
 	public:
@@ -290,9 +311,9 @@ private:
 	class Instruction
 	{
 	public:
-		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames );
-		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames );
-		Instruction( const uint32_t offset, const std::string& instructionString, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames );
+		Instruction( const uint32_t offset, const uint32_t pc, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames );
+		Instruction( const uint32_t offset, const uint32_t pc, const std::string& instructionString, const uint8_t opcode, const uint32_t operand, const std::string& jumpLabelName, const uint32_t operand_size, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames );
+		Instruction( const uint32_t offset, const uint32_t pc, const std::string& instructionString, const uint8_t opcode, MemoryMode memoryMode, MemoryMode indexMode, const std::set<std::string>& funcNames );
 		~Instruction();
 
 		uint8_t GetOpcode( void ) const { return m_Opcode; }
@@ -304,11 +325,13 @@ private:
 		const MemoryMode& GetMemoryMode() const { return m_MemoryMode; }
 		const MemoryMode& GetIndexMode() const { return m_IndexMode; }
 		uint32_t GetOffset( void ) const { return m_Offset; }
+		uint32_t GetPC( void ) const { return m_PC; }
 		const std::string& GetJumpLabelName( void ) const { return m_JumpLabelName; }
 		const std::set<std::string>& GetFuncNames( void ) const { return m_FuncNames; }
 
 	private:
 		uint32_t m_Offset;
+		uint32_t m_PC;
 		std::string m_InstructionString;
 		uint8_t m_Opcode;
 		uint32_t m_Operand;
@@ -343,8 +366,10 @@ private:
 	std::unordered_map< uint32_t, std::string > m_OffsetsToLabelNames;
 	std::unordered_map< std::string, llvm::BasicBlock* > m_LabelNamesToBasicBlocks;
 	std::unordered_map< uint32_t, llvm::GlobalVariable* > m_OffsetsToInstructionStringGlobalVariable;
+	std::unordered_map< std::string, uint32_t > m_returnAddressManipulationFunctions;
+	std::unordered_map< std::string, llvm::BasicBlock* > m_returnAddressManipulationFunctionsBlocks;
 
-	llvm::Function* m_MainFunction;
+	llvm::Function* m_StartFunction;
 
 	llvm::GlobalVariable m_registerA;
 	llvm::GlobalVariable m_registerDB;
@@ -356,11 +381,15 @@ private:
 	llvm::GlobalVariable m_registerY;
 	llvm::GlobalVariable m_registerP;
 
-	static const uint32_t WRAM_SIZE = 0x20000;
-	llvm::GlobalVariable m_wRam;
-
-	static const uint32_t ROM_SIZE = 0x80000;
-	llvm::GlobalVariable m_Rom;
+	llvm::GlobalVariable m_CarryFlag;
+	llvm::GlobalVariable m_ZeroFlag;
+	llvm::GlobalVariable m_InterruptFlag;
+	llvm::GlobalVariable m_DecimalFlag;
+	llvm::GlobalVariable m_IndexRegisterFlag;
+	llvm::GlobalVariable m_AccumulatorFlag;
+	llvm::GlobalVariable m_OverflowFlag;
+	llvm::GlobalVariable m_NegativeFlag;
+	llvm::GlobalVariable m_EmulationFlag;
 
 	llvm::BasicBlock* m_CurrentBasicBlock;
 	llvm::Function* m_CycleFunction;
@@ -371,9 +400,14 @@ private:
 	static inline const std::string WAIT_FOR_VBLANK_LABEL_NAME = "CODE_80805C";
 
 	llvm::Function* m_Load8Function;
-	llvm::Function* m_Load16Function;
 	llvm::Function* m_Store8Function;
-	llvm::Function* m_Store16Function;
+
+	llvm::Function* m_DoPPUFrameFunction;
+
+	llvm::Function* m_ADC8Function;
+	llvm::Function* m_ADC16Function;
+	llvm::Function* m_SBC8Function;
+	llvm::Function* m_SBC16Function;
 };
 
 #endif // RECOMPILER_HPP

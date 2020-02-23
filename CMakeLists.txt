@@ -8,8 +8,51 @@ message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
 set(CMAKE_CXX_STANDARD 17)
 
-set(recompiler_SOURCES Recompiler/main.cpp Recompiler/Recompiler.cpp Recompiler/Recompiler.hpp Recompiler/json.hpp Utils.hpp Utils.cpp)
-set(smk_SOURCES smk_main.cpp gl3w/src/gl3w.c imgui/imgui.h imgui/imgui.cpp imgui/imgui_impl_sdl.h imgui/imgui_impl_sdl.cpp imgui/imgui_impl_opengl3.h imgui/imgui_impl_opengl3.cpp imgui/imgui_internal.h imgui/imgui_widgets.cpp imgui/imgui_draw.cpp imgui/imgui_demo.cpp imgui/imgui_memory_editor.h Utils.hpp Utils.cpp spc/SNES_SPC.cpp spc/SNES_SPC.h spc/SNES_SPC_misc.cpp spc/SNES_SPC_state.cpp spc/SPC_CPU.h spc/SPC_DSP.cpp spc/SPC_DSP.h spc/blargg_common.h spc/blargg_config.h spc/blargg_endian.h spc/blargg_source.h dsp/dsp.h dsp/dsp1.cpp dma/Dma.hpp dma/Dma.cpp smk_main.hpp)
+set(recompiler_SOURCES Recompiler/main.cpp Recompiler/Recompiler.cpp Recompiler/Recompiler.hpp Recompiler/json.hpp)
+set(smk_SOURCES smk_main.cpp)
+
+file(GLOB_RECURSE SRC_GL3W
+    "${CMAKE_CURRENT_SOURCE_DIR}/gl3w/*.cpp"
+		"${CMAKE_CURRENT_SOURCE_DIR}/gl3w/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/gl3w/*.h"
+		"${CMAKE_CURRENT_SOURCE_DIR}/gl3w/*.hpp"
+)
+
+file(GLOB SRC_IMGUI
+    "${CMAKE_CURRENT_SOURCE_DIR}/imgui/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/imgui/*.h"
+		"${CMAKE_CURRENT_SOURCE_DIR}/imgui/*.hpp"
+)
+
+file(GLOB SRC_SPC
+    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/spc/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/spc/*.h"
+		"${CMAKE_CURRENT_SOURCE_DIR}/hardware/spc/*.hpp"
+)
+
+file(GLOB SRC_DSP
+    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/dsp/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/dsp/*.h"
+		"${CMAKE_CURRENT_SOURCE_DIR}/hardware/dsp/*.hpp"
+)
+
+file(GLOB SRC_DMA
+    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/dma/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/dma/*.h"
+		"${CMAKE_CURRENT_SOURCE_DIR}/hardware/dma/*.hpp"
+)
+
+file(GLOB SRC_PPU
+    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/ppu/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/ppu/*.h"
+		"${CMAKE_CURRENT_SOURCE_DIR}/hardware/ppu/*.hpp"
+)
+
+file(GLOB SRC_HARDWARE
+    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hardware/*.h"
+		"${CMAKE_CURRENT_SOURCE_DIR}/hardware/*.hpp"
+)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/sdl2)
 find_package(SDL2 REQUIRED)
@@ -32,7 +75,15 @@ SET_SOURCE_FILES_PROPERTIES(
   GENERATED true
 )
 
-add_executable(smk ${smk_SOURCES} ${GENERATED_OBJ})
+add_executable(smk ${smk_SOURCES} ${SRC_GL3W} ${SRC_IMGUI} ${SRC_SPC} ${SRC_DSP} ${SRC_DMA} ${SRC_PPU} ${SRC_HARDWARE} ${GENERATED_OBJ})
+source_group("gl3w"          	FILES ${SRC_GL3W})
+source_group("imgui"        	FILES ${SRC_IMGUI})
+source_group("spc"        		FILES ${SRC_SPC})
+source_group("dsp"        		FILES ${SRC_DSP})
+source_group("dma"        		FILES ${SRC_DMA})
+source_group("ppu"        		FILES ${SRC_PPU})
+source_group("hardware"       FILES ${SRC_HARDWARE})
+
 add_executable(recompiler ${recompiler_SOURCES})
 									
 add_custom_command(OUTPUT smk.ll
