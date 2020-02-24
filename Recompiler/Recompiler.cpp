@@ -436,9 +436,10 @@ void Recompiler::Recompile()
 {
 	llvm::InitializeNativeTarget();
 	
-	//// wasm 32 no -s EMTERPRETIFY=1 -s EMTERPRETIFY_ASYNC=1
-	//m_RecompilationModule.setDataLayout( "e-m:e-p:32:32-i64:64-n32:64-S128" );
-	//m_RecompilationModule.setTargetTriple( "wasm32" );
+#ifdef __EMSCRIPTEN__
+	m_RecompilationModule.setDataLayout( "e-m:e-p:32:32-i64:64-n32:64-S128" );
+	m_RecompilationModule.setTargetTriple( "wasm32" );
+#endif // __EMSCRIPTEN__
 
 	// Add cycle function that will called every time an instruction is executed:
 	m_CycleFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext )}, false ), llvm::Function::ExternalLinkage, "romCycle", m_RecompilationModule );
@@ -482,13 +483,15 @@ void Recompiler::Recompile()
 	m_IRBuilder.CreateRetVoid();
 	llvm::verifyModule( m_RecompilationModule, &llvm::errs() );
 
-	std::error_code EC;
-	llvm::raw_fd_ostream outputHumanReadable( "smk.ll", EC );
-	m_RecompilationModule.print( outputHumanReadable, nullptr );
-
+#ifdef __EMSCRIPTEN__
 	llvm::raw_fd_ostream binaryOutput( "smk.bc", EC );
 	llvm::WriteBitcodeToFile( m_RecompilationModule, binaryOutput );
 	binaryOutput.flush();
+#else
+	std::error_code EC;
+	llvm::raw_fd_ostream outputHumanReadable( "smk.ll", EC );
+	m_RecompilationModule.print( outputHumanReadable, nullptr );
+#endif // __EMSCRIPTEN__
 }
 
 void Recompiler::AddLabelNameToBasicBlock( const std::string& labelName, llvm::BasicBlock* basicBlock )
