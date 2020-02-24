@@ -229,26 +229,6 @@ void Recompiler::FixReturnAddressManipulationFunctions()
 							}
 						}
 					}
-
-					/*static const std::set< std::string > blocksToPatch = { "CODE_80D444", "CODE_80F109", "CODE_80F118", "CODE_81974E", "CODE_84DA38", "CODE_819A99" };
-					for ( auto& blockToPatch : blocksToPatch )
-					{
-						const auto basicBlockName = functionName + "_" + blockToPatch;
-						auto search = m_LabelNamesToBasicBlocks.find( basicBlockName );
-						if ( search != m_LabelNamesToBasicBlocks.end() )
-						{
-							auto basicBlock = search->second;
-							if ( basicBlock )
-							{
-								auto firstInstruction = basicBlock->getFirstNonPHI();
-								if ( firstInstruction )
-								{
-									m_IRBuilder.SetInsertPoint( firstInstruction );
-									m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 1, static_cast<uint64_t>( 1 ), false ) ), returnValue );
-								}
-							}
-						}
-					}*/
 				}
 			}
 		}
@@ -2102,7 +2082,6 @@ void Recompiler::InstructionIndirectIndexedRead16( Operation op, llvm::Value* ad
 	auto Y = m_IRBuilder.CreateLoad( &m_registerY );
 	auto Y32 = m_IRBuilder.CreateZExt( Y, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto indexedBankAndress = m_IRBuilder.CreateAdd( bankAddress, Y32 );
-
 
 	auto readLow8 = ReadBank( indexedBankAndress );
 	auto readHigh8 = ReadBank( m_IRBuilder.CreateAdd( indexedBankAndress, GetConstant( 1, 32, false ) ) );
