@@ -1,7 +1,7 @@
 #include "Dma.hpp"
 #include "../hardware.hpp"
 
-static constexpr uint8_t TransferOffset[ 8 ][ 4 ] = {
+static constexpr uint8_t TransferOffsetTable[ 8 ][ 4 ] = {
 	{ 0, 0, 0, 0 }, { 0, 1, 0, 1 }, { 0, 0, 0, 0 }, { 0, 0, 1, 1 },
 	{ 0, 1, 2, 3 }, { 0, 1, 0, 1 }, { 0, 0, 0, 0 }, { 0, 0, 1, 1 }
 };
@@ -224,11 +224,7 @@ uint8_t DmaController::Read( const uint32_t address )
 void DmaController::RunHdmaTransfer( DmaChannelConfig& channel )
 {
 	static constexpr uint8_t transferByteCountTable[ 8 ] = { 1, 2, 2, 4, 4, 4, 2, 4 };
-	static constexpr uint8_t transferOffsetTable[ 8 ][ 4 ] = {
-		{ 0, 0, 0, 0 }, { 0, 1, 0, 1 }, { 0, 0, 0, 0 }, { 0, 0, 1, 1 },
-		{ 0, 1, 2, 3 }, { 0, 1, 0, 1 }, { 0, 0, 0, 0 }, { 0, 0, 1, 1 }
-	};
-	const uint8_t *transferOffsets = transferOffsetTable[ channel.m_TransferMode ];
+	const uint8_t *transferOffsets = TransferOffsetTable[ channel.m_TransferMode ];
 	uint8_t transferByteCount = transferByteCountTable[ channel.m_TransferMode ];
 	channel.m_DmaActive = false;
 
@@ -384,7 +380,7 @@ void DmaController::RunDma( DmaChannelConfig& channel )
 		return;
 	}
 
-	const uint8_t *transferOffsets = TransferOffset[ channel.m_TransferMode ];
+	const uint8_t *transferOffsets = TransferOffsetTable[ channel.m_TransferMode ];
 
 	uint8_t i = 0;
 	do {

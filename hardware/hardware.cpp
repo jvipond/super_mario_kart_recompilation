@@ -280,7 +280,6 @@ void Hardware::PowerOn()
 	ppufast.power( false );
 
 	std::cout << "Reached Start!" << std::endl;
-	//std::exit( EXIT_FAILURE );
 	start();
 
 	quit();
@@ -676,12 +675,6 @@ void Hardware::RomCycle( const int32_t cycles, const uint32_t implemented )
 		{
 			controller.UpdateKeyboardState();
 		}
-		/*m_SnesController.UpdateKeyboardState();*/
-
-		/*if ( m_InternalRegisterState.enableAutoJoypadRead )
-		{
-			ProcessAutoJoyPadRead();
-		}*/
 	}
 	else
 	{
@@ -903,7 +896,7 @@ uint8_t Hardware::SnesController::read( const uint32_t address )
 		m_StateBuffer |= 0x8000;
 	}
 
-	uint8_t value = 0;//address == 0x4016 ? 0xFC : 0xE0;
+	uint8_t value = 0;
 	return value | output;
 }
 
