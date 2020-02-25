@@ -12,30 +12,31 @@
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Passes/PassBuilder.h"
 
 Recompiler::Recompiler()
 : m_IRBuilder( m_LLVMContext )
 , m_RecompilationModule( "recompilation", m_LLVMContext )
 , m_RomResetAddr( 0 )
 , m_StartFunction( nullptr )
-, m_registerA( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "A" )
-, m_registerDB( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "DB" )
-, m_registerDP( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "DP" )
-, m_registerPB( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "PB" )
-, m_registerPC( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "PC" )
-, m_registerSP( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "SP" )
-, m_registerX( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "X" )
-, m_registerY( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "Y" )
-, m_registerP( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "P" )
-, m_CarryFlag( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "CF" )
-, m_ZeroFlag( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "ZF" )
-, m_InterruptFlag( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "IF" )
-, m_DecimalFlag( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "DF" )
-, m_IndexRegisterFlag( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "XF" )
-, m_AccumulatorFlag( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "MF" )
-, m_OverflowFlag( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "VF" )
-, m_NegativeFlag( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "NF" )
-, m_EmulationFlag( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, 0, "EF" )
+, m_registerA( nullptr )
+, m_registerDB( nullptr )
+, m_registerDP( nullptr )
+, m_registerPB( nullptr )
+, m_registerPC( nullptr )
+, m_registerSP( nullptr )
+, m_registerX( nullptr )
+, m_registerY( nullptr )
+, m_registerP( nullptr )
+, m_CarryFlag( nullptr )
+, m_ZeroFlag( nullptr )
+, m_InterruptFlag( nullptr )
+, m_DecimalFlag( nullptr )
+, m_IndexRegisterFlag( nullptr )
+, m_AccumulatorFlag( nullptr )
+, m_OverflowFlag( nullptr )
+, m_NegativeFlag( nullptr )
+, m_EmulationFlag( nullptr )
 , m_CurrentBasicBlock( nullptr )
 , m_CycleFunction( nullptr )
 , m_PanicFunction( nullptr )
@@ -52,25 +53,6 @@ Recompiler::Recompiler()
 
 Recompiler::~Recompiler()
 {
-	m_registerA.removeFromParent();
-	m_registerDB.removeFromParent();
-	m_registerDP.removeFromParent();
-	m_registerPB.removeFromParent();
-	m_registerPC.removeFromParent();
-	m_registerSP.removeFromParent();
-	m_registerX.removeFromParent();
-	m_registerY.removeFromParent();
-	m_registerP.removeFromParent();
-
-	m_CarryFlag.removeFromParent();
-	m_ZeroFlag.removeFromParent();
-	m_InterruptFlag.removeFromParent();
-	m_DecimalFlag.removeFromParent();
-	m_IndexRegisterFlag.removeFromParent();
-	m_AccumulatorFlag.removeFromParent();
-	m_OverflowFlag.removeFromParent();
-	m_NegativeFlag.removeFromParent();
-	m_EmulationFlag.removeFromParent();
 }
 
 auto Recompiler::ConvertTo8( llvm::Value* value16 )
@@ -89,8 +71,8 @@ void Recompiler::SetupIrqFunction()
 	newEntryBlock->moveBefore( oldEntryBlock );
 	SelectBlock( newEntryBlock );
 
-	Push( m_IRBuilder.CreateLoad( &m_registerPB ) );
-	auto pc16 = m_IRBuilder.CreateLoad( &m_registerPC );
+	Push( m_IRBuilder.CreateLoad( m_registerPB ) );
+	auto pc16 = m_IRBuilder.CreateLoad( m_registerPC );
 	auto[ pclow8, pcHigh8 ] = ConvertTo8( pc16 );
 	Push( pcHigh8 );
 	Push( pclow8 );
@@ -109,8 +91,8 @@ void Recompiler::SetupNmiCall()
 	newEntryBlock->moveBefore( &oldEntryBlock );
 	SelectBlock( newEntryBlock );
 
-	Push( m_IRBuilder.CreateLoad( &m_registerPB ) );
-	auto pc16 = m_IRBuilder.CreateLoad( &m_registerPC );
+	Push( m_IRBuilder.CreateLoad( m_registerPB ) );
+	auto pc16 = m_IRBuilder.CreateLoad( m_registerPC );
 	auto [pclow8, pcHigh8] = ConvertTo8( pc16 );
 	Push( pcHigh8 );
 	Push( pclow8 );
@@ -367,7 +349,7 @@ void Recompiler::GenerateCode()
 
 					auto codeGenIndex = nodeIndex + 1;
 					auto hasAnyInstructions = false;
-					while ( std::holds_alternative<Instruction>( m_Program[ codeGenIndex ] ) && codeGenIndex < numProgramNodes )
+					while ( codeGenIndex < numProgramNodes && std::holds_alternative<Instruction>( m_Program[ codeGenIndex ] ) )
 					{
 						assert( std::holds_alternative<Instruction>( m_Program[ codeGenIndex ] ) );
 						const auto& instruction = std::get<Instruction>( m_Program[ codeGenIndex ] );
@@ -421,6 +403,25 @@ void Recompiler::Recompile()
 	m_RecompilationModule.setTargetTriple( "wasm32" );
 #endif // __EMSCRIPTEN__
 
+	m_registerA = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "A" );
+	m_registerDB = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "DB" );
+	m_registerDP = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "DP" );
+	m_registerPB = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "PB" );
+	m_registerPC = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "PC" );
+	m_registerSP = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "SP" );
+	m_registerX = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "X" );
+	m_registerY = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "Y" );
+	m_registerP = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "P" );
+	m_CarryFlag = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "CF" );
+	m_ZeroFlag = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "ZF" );
+	m_InterruptFlag = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "IF" );
+	m_DecimalFlag = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "DF" );
+	m_IndexRegisterFlag = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "XF" );
+	m_AccumulatorFlag = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "MF" );
+	m_OverflowFlag = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "VF" );
+	m_NegativeFlag = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "NF" );
+	m_EmulationFlag = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "EF" );
+
 	// Add cycle function that will called every time an instruction is executed:
 	m_CycleFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext )}, false ), llvm::Function::ExternalLinkage, "romCycle", m_RecompilationModule );
 	m_UpdateInstructionOutput = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt8PtrTy( m_LLVMContext ) }, false ), llvm::Function::ExternalLinkage, "updateInstructionOutput", m_RecompilationModule );
@@ -456,12 +457,27 @@ void Recompiler::Recompile()
 	FixReturnAddressManipulationFunctions();
 
 	SelectBlock( entry );
-	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, m_RomResetAddr, true ) ), &m_registerPC );
+	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, m_RomResetAddr, true ) ), m_registerPC );
 	
 	auto resetFunction = m_Functions[ m_RomResetFuncName ];
 	m_IRBuilder.CreateCall( resetFunction );
 	m_IRBuilder.CreateRetVoid();
 	llvm::verifyModule( m_RecompilationModule, &llvm::errs() );
+
+	llvm::PassBuilder passBuilder;
+	llvm::LoopAnalysisManager loopAnalysisManager;
+	llvm::FunctionAnalysisManager functionAnalysisManager;
+	llvm::CGSCCAnalysisManager cGSCCAnalysisManager;
+	llvm::ModuleAnalysisManager moduleAnalysisManager;
+
+	passBuilder.registerModuleAnalyses( moduleAnalysisManager );
+	passBuilder.registerCGSCCAnalyses( cGSCCAnalysisManager );
+	passBuilder.registerFunctionAnalyses( functionAnalysisManager );
+	passBuilder.registerLoopAnalyses( loopAnalysisManager );
+	passBuilder.crossRegisterProxies( loopAnalysisManager, functionAnalysisManager, cGSCCAnalysisManager, moduleAnalysisManager );
+
+	llvm::ModulePassManager modulePassManager = passBuilder.buildModuleOptimizationPipeline( llvm::PassBuilder::OptimizationLevel::O3 );
+	modulePassManager.run( m_RecompilationModule, moduleAnalysisManager );
 
 #ifdef __EMSCRIPTEN__
 	llvm::raw_fd_ostream binaryOutput( "smk.bc", EC );
@@ -506,11 +522,11 @@ void Recompiler::PerformUpdateInstructionOutput( const uint32_t offset, const ui
 {
 	auto pb32 = GetConstant( (pc & 0xff0000) >> 16, 32, false );
 	auto pb8 = m_IRBuilder.CreateTrunc( pb32, llvm::Type::getInt8Ty( m_LLVMContext ) );
-	m_IRBuilder.CreateStore( pb8, &m_registerPB );
+	m_IRBuilder.CreateStore( pb8, m_registerPB );
 
 	auto pc32 = GetConstant( pc & 0xffff, 32, false );
 	auto pc16 = m_IRBuilder.CreateTrunc( pc32, llvm::Type::getInt16Ty( m_LLVMContext ) );
-	m_IRBuilder.CreateStore( pc16, &m_registerPC );
+	m_IRBuilder.CreateStore( pc16, m_registerPC );
 
 	auto s = m_OffsetsToInstructionStringGlobalVariable[ offset ];
 	std::vector<llvm::Value*> params = { GetConstant( pc, 32, false ), m_IRBuilder.CreateConstGEP2_32( s->getValueType(), s, 0, 0, "" ) };
@@ -535,14 +551,14 @@ llvm::Value* Recompiler::LoadRegister32( llvm::Value* value )
 
 llvm::Value* Recompiler::CreateDirectAddress( llvm::Value* address )
 {
-	auto D = LoadRegister32( &m_registerDP );
+	auto D = LoadRegister32( m_registerDP );
 	auto finalAddress = m_IRBuilder.CreateAdd( D, address );
 	return m_IRBuilder.CreateAnd( finalAddress, 0xffff );
 }
 
 llvm::Value* Recompiler::CreateDirectEmulationAddress( llvm::Value* address )
 {
-	auto DP16 = m_IRBuilder.CreateLoad( &m_registerDP );
+	auto DP16 = m_IRBuilder.CreateLoad( m_registerDP );
 	auto DP32 = m_IRBuilder.CreateZExt( DP16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	return m_IRBuilder.CreateAnd( m_IRBuilder.CreateOr( address, DP32 ), 0xff );
 }
@@ -586,11 +602,11 @@ auto Recompiler::CreateCondTestThenBlock( llvm::Value* cond )
 
 llvm::Value* Recompiler::ReadDirect( llvm::Value* address )
 {
-	auto[ dpLow8Ptr, dpHigh8Ptr ] = Recompiler::GetLowHighPtrFromPtr16( &m_registerDP );
+	auto[ dpLow8Ptr, dpHigh8Ptr ] = Recompiler::GetLowHighPtrFromPtr16( m_registerDP );
 	auto dpLow8 = m_IRBuilder.CreateLoad( dpLow8Ptr );
 
 	auto dpLow8EqualZero = m_IRBuilder.CreateICmpEQ( dpLow8, GetConstant( 0, 8, false ) );
-	auto emulationFlagSet = m_IRBuilder.CreateLoad( &m_EmulationFlag );
+	auto emulationFlagSet = m_IRBuilder.CreateLoad( m_EmulationFlag );
 	auto cond = m_IRBuilder.CreateAnd( emulationFlagSet, dpLow8EqualZero );
 
 	auto[ thenBlock, elseBlock, endBlock ] = CreateCondTestThenElseBlock( cond );
@@ -620,11 +636,11 @@ llvm::Value* Recompiler::ReadDirectNative( llvm::Value* address )
 
 void Recompiler::WriteDirect( llvm::Value* address, llvm::Value* value )
 {
-	auto[ dpLow8Ptr, dpHigh8Ptr ] = Recompiler::GetLowHighPtrFromPtr16( &m_registerDP );
+	auto[ dpLow8Ptr, dpHigh8Ptr ] = Recompiler::GetLowHighPtrFromPtr16( m_registerDP );
 	auto dpLow8 = m_IRBuilder.CreateLoad( dpLow8Ptr );
 
 	auto dpLow8EqualZero = m_IRBuilder.CreateICmpEQ( dpLow8, GetConstant( 0, 8, false ) );
-	auto emulationFlagSet = m_IRBuilder.CreateLoad( &m_EmulationFlag );
+	auto emulationFlagSet = m_IRBuilder.CreateLoad( m_EmulationFlag );
 	auto cond = m_IRBuilder.CreateAnd( emulationFlagSet, dpLow8EqualZero );
 
 	auto [thenBlock, elseBlock, endBlock] = CreateCondTestThenElseBlock( cond );
@@ -644,7 +660,7 @@ void Recompiler::WriteDirect( llvm::Value* address, llvm::Value* value )
 
 llvm::Value* Recompiler::CreateBankAddress( llvm::Value* address )
 {
-	auto B = LoadRegister32( &m_registerDB );
+	auto B = LoadRegister32( m_registerDB );
 	auto shiftedBank = m_IRBuilder.CreateShl( B, 16 );
 	auto finalAddress = m_IRBuilder.CreateAdd( shiftedBank, address );
 	return m_IRBuilder.CreateAnd( finalAddress, 0xffffff );
@@ -674,7 +690,7 @@ void Recompiler::WriteLong( llvm::Value* address, llvm::Value* value )
 
 llvm::Value* Recompiler::CreateStackAddress( llvm::Value* address )
 {
-	auto S = LoadRegister32( &m_registerSP );
+	auto S = LoadRegister32( m_registerSP );
 	auto finalAddress = m_IRBuilder.CreateAdd( S, address );
 	return m_IRBuilder.CreateAnd( finalAddress, 0xffff );
 }
@@ -693,50 +709,50 @@ void Recompiler::WriteStack( llvm::Value* address, llvm::Value* value )
 
 llvm::Value* Recompiler::Pull()
 {
-	auto EF = m_IRBuilder.CreateLoad( &m_EmulationFlag );
+	auto EF = m_IRBuilder.CreateLoad( m_EmulationFlag );
 	auto EFCond = m_IRBuilder.CreateICmpEQ( EF, GetConstant( 1, 1, false ) );
 	auto[ thenBlockEmulationFlagTest, elseBlockEmulationFlagTest, endBlockEmulationFlagTest ] = CreateCondTestThenElseBlock( EFCond );
 
 	SelectBlock( thenBlockEmulationFlagTest );
-	auto[ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerSP );
+	auto[ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerSP );
 	auto spLow8 = m_IRBuilder.CreateLoad( spLow8Ptr );
 	auto spLow8AddOne = m_IRBuilder.CreateAdd( spLow8, GetConstant( 1, 8, false ) );
 	m_IRBuilder.CreateStore( spLow8AddOne, spLow8Ptr );
 	m_IRBuilder.CreateBr( endBlockEmulationFlagTest );
 
 	SelectBlock( elseBlockEmulationFlagTest );
-	auto SP16Value = m_IRBuilder.CreateLoad( &m_registerSP );
+	auto SP16Value = m_IRBuilder.CreateLoad( m_registerSP );
 	auto SP16AddOne = m_IRBuilder.CreateAdd( SP16Value, GetConstant( 1, 16, false ) );
-	m_IRBuilder.CreateStore( SP16AddOne, &m_registerSP );
+	m_IRBuilder.CreateStore( SP16AddOne, m_registerSP );
 	m_IRBuilder.CreateBr( endBlockEmulationFlagTest );
 
 	SelectBlock( endBlockEmulationFlagTest );
 
-	return Read8( m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerSP ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
+	return Read8( m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( m_registerSP ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 }
 
 llvm::Value* Recompiler::PullNative()
 {
-	auto SP16 = m_IRBuilder.CreateLoad( &m_registerSP );
+	auto SP16 = m_IRBuilder.CreateLoad( m_registerSP );
 	auto SP16PlusOne = m_IRBuilder.CreateAdd( SP16, GetConstant( 1, 16, false ) );
 	auto SP32PlusOne = m_IRBuilder.CreateZExt( SP16PlusOne, llvm::Type::getInt32Ty( m_LLVMContext ) );
-	m_IRBuilder.CreateStore( SP16PlusOne, &m_registerSP );
+	m_IRBuilder.CreateStore( SP16PlusOne, m_registerSP );
 	return Read8( SP32PlusOne );
 }
 
 void Recompiler::Push( llvm::Value* value8 )
 {
-	auto SP16 = m_IRBuilder.CreateLoad( &m_registerSP );
+	auto SP16 = m_IRBuilder.CreateLoad( m_registerSP );
 	auto SP32 = m_IRBuilder.CreateZExt( SP16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
 	Write8( SP32, value8 );
 
-	auto EF = m_IRBuilder.CreateLoad( &m_EmulationFlag );
+	auto EF = m_IRBuilder.CreateLoad( m_EmulationFlag );
 	auto EFCond = m_IRBuilder.CreateICmpEQ( EF, GetConstant( 1, 1, false ) );
 	auto[ thenBlockEmulationFlagTest, elseBlockEmulationFlagTest, endBlockEmulationFlagTest ] = CreateCondTestThenElseBlock( EFCond );
 
 	SelectBlock( thenBlockEmulationFlagTest );
-	auto[ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerSP );
+	auto[ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerSP );
 	auto spLow8 = m_IRBuilder.CreateLoad( spLow8Ptr );
 	auto spLow8MinusOne = m_IRBuilder.CreateSub( spLow8, GetConstant( 1, 8, false ) );
 	m_IRBuilder.CreateStore( spLow8MinusOne, spLow8Ptr );
@@ -744,7 +760,7 @@ void Recompiler::Push( llvm::Value* value8 )
 
 	SelectBlock( elseBlockEmulationFlagTest );
 	auto SP16MinusOne = m_IRBuilder.CreateSub( SP16, GetConstant( 1, 16, false ) );
-	m_IRBuilder.CreateStore( SP16MinusOne, &m_registerSP );
+	m_IRBuilder.CreateStore( SP16MinusOne, m_registerSP );
 	m_IRBuilder.CreateBr( endBlockEmulationFlagTest );
 
 	SelectBlock( endBlockEmulationFlagTest );
@@ -752,13 +768,13 @@ void Recompiler::Push( llvm::Value* value8 )
 
 void Recompiler::PushNative( llvm::Value* value8 )
 {
-	auto SP16 = m_IRBuilder.CreateLoad( &m_registerSP );
+	auto SP16 = m_IRBuilder.CreateLoad( m_registerSP );
 	auto SP32 = m_IRBuilder.CreateZExt( SP16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
 	Write8( SP32, value8 );
 
 	auto SP16MinusOne = m_IRBuilder.CreateSub( SP16, GetConstant( 1, 16, false ) );
-	m_IRBuilder.CreateStore( SP16MinusOne, &m_registerSP );
+	m_IRBuilder.CreateStore( SP16MinusOne, m_registerSP );
 }
 
 void Recompiler::InstructionImmediateRead8( Operation op, llvm::Value* operand8 )
@@ -783,10 +799,10 @@ void Recompiler::PerformClearFlagInstruction( llvm::Value* flag )
 
 void Recompiler::PerformExchangeCEInstruction()
 {
-	auto newEmulationFlagValue = m_IRBuilder.CreateLoad( &m_CarryFlag );
-	auto newCarryFlagValue = m_IRBuilder.CreateLoad( &m_EmulationFlag );
-	m_IRBuilder.CreateStore( newEmulationFlagValue, &m_EmulationFlag );
-	m_IRBuilder.CreateStore( newCarryFlagValue, &m_CarryFlag );
+	auto newEmulationFlagValue = m_IRBuilder.CreateLoad( m_CarryFlag );
+	auto newCarryFlagValue = m_IRBuilder.CreateLoad( m_EmulationFlag );
+	m_IRBuilder.CreateStore( newEmulationFlagValue, m_EmulationFlag );
+	m_IRBuilder.CreateStore( newCarryFlagValue, m_CarryFlag );
 
 	auto thenBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
 	auto endBlock = llvm::BasicBlock::Create( m_LLVMContext, "", m_CurrentBasicBlock ? m_CurrentBasicBlock->getParent() : nullptr );
@@ -799,15 +815,15 @@ void Recompiler::PerformExchangeCEInstruction()
 
 	m_IRBuilder.CreateCondBr( newEmulationFlagValue, thenBlock, endBlock );
 	SelectBlock( thenBlock );
-	PerformSetFlagInstruction( &m_IndexRegisterFlag );
-	PerformSetFlagInstruction( &m_AccumulatorFlag );
-	auto [xLow8Ptr, xHigh8Ptr]  = GetLowHighPtrFromPtr16( &m_registerX );
+	PerformSetFlagInstruction( m_IndexRegisterFlag );
+	PerformSetFlagInstruction( m_AccumulatorFlag );
+	auto [xLow8Ptr, xHigh8Ptr]  = GetLowHighPtrFromPtr16( m_registerX );
 	m_IRBuilder.CreateStore( GetConstant( 0, 8, false ), xHigh8Ptr );
 
-	auto [ yLow8Ptr, yHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerY );
+	auto [ yLow8Ptr, yHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerY );
 	m_IRBuilder.CreateStore( GetConstant( 0, 8, false ), yHigh8Ptr );
 
-	auto [ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerSP );
+	auto [ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerSP );
 	m_IRBuilder.CreateStore( GetConstant( 1, 8, false ), spHigh8Ptr );
 	m_IRBuilder.CreateBr( endBlock );
 	
@@ -816,7 +832,7 @@ void Recompiler::PerformExchangeCEInstruction()
 
 void Recompiler::PerformExchangeBAInstruction()
 {
-	auto [ aLow8Ptr, aHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerA );
+	auto [ aLow8Ptr, aHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerA );
 	auto aLow8 = m_IRBuilder.CreateLoad( aLow8Ptr );
 	auto aHigh8 = m_IRBuilder.CreateLoad( aHigh8Ptr );
 
@@ -824,10 +840,10 @@ void Recompiler::PerformExchangeBAInstruction()
 	m_IRBuilder.CreateStore( aHigh8, aLow8Ptr );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( aHigh8, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( aHigh8, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 }
 
 llvm::Value* Recompiler::LoadFlag8( llvm::Value* flagPtr )
@@ -860,14 +876,14 @@ auto Recompiler::AddAllValues( llvm::Value* s, T... ts )
 
 llvm::Value* Recompiler::GetProcessorStatusRegisterValueFromFlags()
 {
-	auto c8 = m_IRBuilder.CreateShl( LoadFlag8( &m_CarryFlag ), 0ull );
-	auto z8 = m_IRBuilder.CreateShl( LoadFlag8( &m_ZeroFlag ), 1ull );
-	auto i8 = m_IRBuilder.CreateShl( LoadFlag8( &m_InterruptFlag ), 2ull );
-	auto d8 = m_IRBuilder.CreateShl( LoadFlag8( &m_DecimalFlag ), 3ull );
-	auto x8 = m_IRBuilder.CreateShl( LoadFlag8( &m_IndexRegisterFlag ), 4ull );
-	auto m8 = m_IRBuilder.CreateShl( LoadFlag8( &m_AccumulatorFlag ), 5ull );
-	auto v8 = m_IRBuilder.CreateShl( LoadFlag8( &m_OverflowFlag ), 6ull );
-	auto n8 = m_IRBuilder.CreateShl( LoadFlag8( &m_NegativeFlag ), 7ull );
+	auto c8 = m_IRBuilder.CreateShl( LoadFlag8( m_CarryFlag ), 0ull );
+	auto z8 = m_IRBuilder.CreateShl( LoadFlag8( m_ZeroFlag ), 1ull );
+	auto i8 = m_IRBuilder.CreateShl( LoadFlag8( m_InterruptFlag ), 2ull );
+	auto d8 = m_IRBuilder.CreateShl( LoadFlag8( m_DecimalFlag ), 3ull );
+	auto x8 = m_IRBuilder.CreateShl( LoadFlag8( m_IndexRegisterFlag ), 4ull );
+	auto m8 = m_IRBuilder.CreateShl( LoadFlag8( m_AccumulatorFlag ), 5ull );
+	auto v8 = m_IRBuilder.CreateShl( LoadFlag8( m_OverflowFlag ), 6ull );
+	auto n8 = m_IRBuilder.CreateShl( LoadFlag8( m_NegativeFlag ), 7ull );
 
 	return OrAllValues( c8, z8, i8, d8, x8, m8, v8, n8 );
 }
@@ -875,51 +891,51 @@ llvm::Value* Recompiler::GetProcessorStatusRegisterValueFromFlags()
 void Recompiler::SetProcessorStatusFlagsFromValue( llvm::Value* status8 )
 {
 	auto carryFlagResult = TestBits8( status8, 0x01 );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto zeroFlagResult = TestBits8( status8, 0x02 );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto interruptFlagResult = TestBits8( status8, 0x04 );
-	m_IRBuilder.CreateStore( interruptFlagResult, &m_InterruptFlag );
+	m_IRBuilder.CreateStore( interruptFlagResult, m_InterruptFlag );
 
 	auto decimalFlagResult = TestBits8( status8, 0x08 );
-	m_IRBuilder.CreateStore( decimalFlagResult, &m_DecimalFlag );
+	m_IRBuilder.CreateStore( decimalFlagResult, m_DecimalFlag );
 
 	auto indexFlagResult = TestBits8( status8, 0x10 );
-	m_IRBuilder.CreateStore( indexFlagResult, &m_IndexRegisterFlag );
+	m_IRBuilder.CreateStore( indexFlagResult, m_IndexRegisterFlag );
 
 	auto accumulatorFlagResult = TestBits8( status8, 0x20 );
-	m_IRBuilder.CreateStore( accumulatorFlagResult, &m_AccumulatorFlag );
+	m_IRBuilder.CreateStore( accumulatorFlagResult, m_AccumulatorFlag );
 
 	auto overflowFlagResult = TestBits8( status8, 0x40 );
-	m_IRBuilder.CreateStore( overflowFlagResult, &m_OverflowFlag );
+	m_IRBuilder.CreateStore( overflowFlagResult, m_OverflowFlag );
 
 	auto negativeFlagResult = TestBits8( status8, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 }
 
 void Recompiler::PerformProcessorStatusRegisterForcedConfiguration()
 {
-	auto EF = m_IRBuilder.CreateLoad( &m_EmulationFlag );
+	auto EF = m_IRBuilder.CreateLoad( m_EmulationFlag );
 	auto EFCond = m_IRBuilder.CreateICmpEQ( EF, GetConstant( 1, 1, false ) );
 	auto[ thenBlockEmulationFlagTest, endBlockEmulationFlagTest ] = CreateCondTestThenBlock( EFCond );
 
 	SelectBlock( thenBlockEmulationFlagTest );
-	PerformSetFlagInstruction( &m_IndexRegisterFlag );
-	PerformSetFlagInstruction( &m_AccumulatorFlag );
+	PerformSetFlagInstruction( m_IndexRegisterFlag );
+	PerformSetFlagInstruction( m_AccumulatorFlag );
 	m_IRBuilder.CreateBr( endBlockEmulationFlagTest );
 
 	SelectBlock( endBlockEmulationFlagTest );
-	auto XF = m_IRBuilder.CreateLoad( &m_IndexRegisterFlag );
+	auto XF = m_IRBuilder.CreateLoad( m_IndexRegisterFlag );
 	auto XFCond = m_IRBuilder.CreateICmpEQ( XF, GetConstant( 1, 1, false ) );
 	auto[ thenBlockIndexFlagTest, endBlockIndexFlagTest ] = CreateCondTestThenBlock( XFCond );
 
 	SelectBlock( thenBlockIndexFlagTest );
-	auto[ xlow8Ptr, xHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerX );
+	auto[ xlow8Ptr, xHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerX );
 	m_IRBuilder.CreateStore( GetConstant( 0, 8, false ), xHigh8Ptr );
 
-	auto[ ylow8Ptr, yHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerY );
+	auto[ ylow8Ptr, yHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerY );
 	m_IRBuilder.CreateStore( GetConstant( 0, 8, false ), yHigh8Ptr );
 	m_IRBuilder.CreateBr( endBlockIndexFlagTest );
 
@@ -965,7 +981,7 @@ auto Recompiler::CreateRegisterFlagTestBlock( llvm::Value* flagPtr )
 
 void Recompiler::PerformTransferInstruction( RegisterModeFlag modeFlag, llvm::Value* sourceRegisterPtr, llvm::Value* destinationRegisterPtr )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionTransfer8( sourceRegisterPtr, destinationRegisterPtr );
@@ -985,15 +1001,15 @@ void Recompiler::PerformTransfer16Instruction( llvm::Value* sourceRegisterPtr, l
 
 void Recompiler::PerformTransferCSInstruction()
 {
-	auto A16 = m_IRBuilder.CreateLoad( &m_registerA );
-	m_IRBuilder.CreateStore( A16, &m_registerSP );
+	auto A16 = m_IRBuilder.CreateLoad( m_registerA );
+	m_IRBuilder.CreateStore( A16, m_registerSP );
 
 	PerformStackPointerEmulationFlagForcedConfiguration();
 }
 
 void Recompiler::PerformTransferSXInstruction( RegisterModeFlag modeFlag )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionTransferSX8();
@@ -1008,21 +1024,21 @@ void Recompiler::PerformTransferSXInstruction( RegisterModeFlag modeFlag )
 
 void Recompiler::PerformTransferXSInstruction()
 {
-	auto EF = m_IRBuilder.CreateLoad( &m_EmulationFlag );
+	auto EF = m_IRBuilder.CreateLoad( m_EmulationFlag );
 	auto EFCond = m_IRBuilder.CreateICmpEQ( EF, GetConstant( 1, 1, false ) );
 	auto[ thenBlockEmulationFlagTest, elseBlockEmulationFlagTest, endBlockEmulationFlagTest ] = CreateCondTestThenElseBlock( EFCond );
 
 	SelectBlock( thenBlockEmulationFlagTest );
-	auto[ xLow8Ptr, xHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerX );
-	auto[ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerSP );
+	auto[ xLow8Ptr, xHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerX );
+	auto[ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerSP );
 
 	auto xlow8Value = m_IRBuilder.CreateLoad( xLow8Ptr );
 	m_IRBuilder.CreateStore( xlow8Value, spLow8Ptr );
 	m_IRBuilder.CreateBr( endBlockEmulationFlagTest );
 
 	SelectBlock( elseBlockEmulationFlagTest );
-	auto X16Value = m_IRBuilder.CreateLoad( &m_registerX );
-	m_IRBuilder.CreateStore( X16Value, &m_registerSP );
+	auto X16Value = m_IRBuilder.CreateLoad( m_registerX );
+	m_IRBuilder.CreateStore( X16Value, m_registerSP );
 	m_IRBuilder.CreateBr( endBlockEmulationFlagTest );
 
 	SelectBlock( endBlockEmulationFlagTest );
@@ -1032,7 +1048,7 @@ void Recompiler::PerformPushInstruction( RegisterModeFlag modeFlag, llvm::Value*
 {
 	auto[ low8, high8 ] = ConvertTo8( value16 );
 
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionPush8( low8 );
@@ -1052,7 +1068,7 @@ void Recompiler::PerformPush8Instruction( llvm::Value* value8 )
 
 void Recompiler::PerformPushDInstruction()
 {
-	auto[ dLow8Ptr, dHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerDP );
+	auto[ dLow8Ptr, dHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerDP );
 	auto dLow8Value = m_IRBuilder.CreateLoad( dLow8Ptr );
 	auto dHigh8Value = m_IRBuilder.CreateLoad( dHigh8Ptr );
 	PushNative( dHigh8Value );
@@ -1063,12 +1079,12 @@ void Recompiler::PerformPushDInstruction()
 
 void Recompiler::PerformStackPointerEmulationFlagForcedConfiguration()
 {
-	auto EF = m_IRBuilder.CreateLoad( &m_EmulationFlag );
+	auto EF = m_IRBuilder.CreateLoad( m_EmulationFlag );
 	auto EFCond = m_IRBuilder.CreateICmpEQ( EF, GetConstant( 1, 1, false ) );
 	auto[ thenBlockEmulationFlagTest, endBlockEmulationFlagTest ] = CreateCondTestThenBlock( EFCond );
 
 	SelectBlock( thenBlockEmulationFlagTest );
-	auto[ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerSP );
+	auto[ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerSP );
 	m_IRBuilder.CreateStore( GetConstant( 1, 8, false ), spHigh8Ptr );
 	m_IRBuilder.CreateBr( endBlockEmulationFlagTest );
 
@@ -1111,10 +1127,10 @@ void Recompiler::PerformJumpInstruction( const std::string& labelName, const std
 
 llvm::Value* Recompiler::GetPBPC32()
 {
-	auto pc16 = m_IRBuilder.CreateLoad( &m_registerPC );
+	auto pc16 = m_IRBuilder.CreateLoad( m_registerPC );
 	auto pc32 = m_IRBuilder.CreateZExt( pc16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	
-	auto pb8 = m_IRBuilder.CreateLoad( &m_registerPB );
+	auto pb8 = m_IRBuilder.CreateLoad( m_registerPB );
 	auto pb32 = m_IRBuilder.CreateZExt( pb8, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
 	auto shiftedPB32 = m_IRBuilder.CreateShl( pb32, 16 );
@@ -1163,7 +1179,7 @@ void Recompiler::PerformJumpIndirectInstruction( const uint32_t instructionOffse
 	auto low8PC = Read8( m_IRBuilder.CreateZExt( operand16, llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 	auto high8PC = Read8( m_IRBuilder.CreateZExt( m_IRBuilder.CreateAdd( operand16, GetConstant( 1, 16, false ) ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 
-	auto [pclow8Ptr, pcHigh8Ptr] = GetLowHighPtrFromPtr16( &m_registerPC );
+	auto [pclow8Ptr, pcHigh8Ptr] = GetLowHighPtrFromPtr16( m_registerPC );
 	m_IRBuilder.CreateStore( low8PC, pclow8Ptr );
 	m_IRBuilder.CreateStore( high8PC, pcHigh8Ptr );
 
@@ -1173,18 +1189,18 @@ void Recompiler::PerformJumpIndirectInstruction( const uint32_t instructionOffse
 
 void Recompiler::PerformJumpIndexedIndirectInstruction( const uint32_t instructionOffset, llvm::Value* operand16, const std::string& functionName )
 {
-	auto PB8 = m_IRBuilder.CreateLoad( &m_registerPB );
+	auto PB8 = m_IRBuilder.CreateLoad( m_registerPB );
 	auto PB32 = m_IRBuilder.CreateZExt( PB8, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto shiftedPB32 = m_IRBuilder.CreateShl( PB32, 16 );
 
-	auto X16 = m_IRBuilder.CreateLoad( &m_registerX );
+	auto X16 = m_IRBuilder.CreateLoad( m_registerX );
 	auto readAddressLow8 = OrAllValues( shiftedPB32, m_IRBuilder.CreateZExt( AddAllValues( operand16, X16 ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 	auto readAddressHigh8 = OrAllValues( shiftedPB32, m_IRBuilder.CreateZExt( AddAllValues( operand16, X16, GetConstant( 1, 16, false ) ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 	
 	auto low8PC = Read8( readAddressLow8 );
 	auto high8PC = Read8( readAddressHigh8 );
 
-	auto[ pclow8Ptr, pcHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerPC );
+	auto[ pclow8Ptr, pcHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerPC );
 
 	m_IRBuilder.CreateStore( low8PC, pclow8Ptr );
 	m_IRBuilder.CreateStore( high8PC, pcHigh8Ptr );
@@ -1217,7 +1233,7 @@ void Recompiler::InsertFunctionCall( const uint32_t instructionOffset )
 
 void Recompiler::PerformCallShortInstruction( const uint32_t instructionOffset )
 {
-	auto pcPlus2 = AddAllValues( m_IRBuilder.CreateLoad( &m_registerPC ), GetConstant( 2, 16, false ) );
+	auto pcPlus2 = AddAllValues( m_IRBuilder.CreateLoad( m_registerPC ), GetConstant( 2, 16, false ) );
 	auto [pcLow8, pcHigh8] = ConvertTo8( pcPlus2 );
 	Push( pcHigh8 );
 	Push( pcLow8 );
@@ -1227,10 +1243,10 @@ void Recompiler::PerformCallShortInstruction( const uint32_t instructionOffset )
 
 void Recompiler::PerformCallLongInstruction( const uint32_t instructionOffset )
 {
-	auto pb8 = m_IRBuilder.CreateLoad( &m_registerPB );
+	auto pb8 = m_IRBuilder.CreateLoad( m_registerPB );
 	Push( pb8 );
 	
-	auto pcPlus3 = AddAllValues( m_IRBuilder.CreateLoad( &m_registerPC ), GetConstant( 3, 16, false ) );
+	auto pcPlus3 = AddAllValues( m_IRBuilder.CreateLoad( m_registerPC ), GetConstant( 3, 16, false ) );
 	auto[ pcLow8, pcHigh8 ] = ConvertTo8( pcPlus3 );
 	Push( pcHigh8 );
 	Push( pcLow8 );
@@ -1242,23 +1258,23 @@ void Recompiler::PerformCallLongInstruction( const uint32_t instructionOffset )
 
 void Recompiler::PerformCallIndexedIndirectInstruction( const uint32_t instructionOffset, llvm::Value* operand16 )
 {
-	auto pcPlus2 = AddAllValues( m_IRBuilder.CreateLoad( &m_registerPC ), GetConstant( 2, 16, false ) );
+	auto pcPlus2 = AddAllValues( m_IRBuilder.CreateLoad( m_registerPC ), GetConstant( 2, 16, false ) );
 	auto[ pcLow8, pcHigh8 ] = ConvertTo8( pcPlus2 );
 	PushNative( pcHigh8 );
 	PushNative( pcLow8 );
 
-	auto PB8 = m_IRBuilder.CreateLoad( &m_registerPB );
+	auto PB8 = m_IRBuilder.CreateLoad( m_registerPB );
 	auto PB32 = m_IRBuilder.CreateZExt( PB8, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto shiftedPB32 = m_IRBuilder.CreateShl( PB32, 16 );
 
-	auto X16 = m_IRBuilder.CreateLoad( &m_registerX );
+	auto X16 = m_IRBuilder.CreateLoad( m_registerX );
 	auto readAddressLow8 = OrAllValues( shiftedPB32, m_IRBuilder.CreateZExt( AddAllValues( operand16, X16 ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 	auto readAddressHigh8 = OrAllValues( shiftedPB32, m_IRBuilder.CreateZExt( AddAllValues( operand16, X16, GetConstant( 1, 16, false ) ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 
 	auto low8PC = Read8( readAddressLow8 );
 	auto high8PC = Read8( readAddressHigh8 );
 
-	auto[ pclow8Ptr, pcHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerPC );
+	auto[ pclow8Ptr, pcHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerPC );
 
 	m_IRBuilder.CreateStore( low8PC, pclow8Ptr );
 	m_IRBuilder.CreateStore( high8PC, pcHigh8Ptr );
@@ -1304,7 +1320,7 @@ void Recompiler::PerformReturnInterruptInstruction()
 	PerformProcessorStatusRegisterForcedConfiguration();
 	Pull();
 
-	auto EF = m_IRBuilder.CreateLoad( &m_EmulationFlag );
+	auto EF = m_IRBuilder.CreateLoad( m_EmulationFlag );
 	auto EFCond = m_IRBuilder.CreateICmpEQ( EF, GetConstant( 1, 1, false ) );
 	auto [thenBlock, elseBlock, endBlock] = CreateCondTestThenElseBlock( EFCond );
 	
@@ -1345,19 +1361,19 @@ void Recompiler::PerformReturnLongInstruction()
 
 void Recompiler::PerformPullDInstruction()
 {
-	auto[ low8Ptr, high8Ptr ] = Recompiler::GetLowHighPtrFromPtr16( &m_registerDP );
+	auto[ low8Ptr, high8Ptr ] = Recompiler::GetLowHighPtrFromPtr16( m_registerDP );
 
 	auto low = PullNative();
 	m_IRBuilder.CreateStore( low, low8Ptr );
 	auto high = PullNative();
 	m_IRBuilder.CreateStore( high, high8Ptr );
 
-	auto newValue16 = m_IRBuilder.CreateLoad( &m_registerDP );
+	auto newValue16 = m_IRBuilder.CreateLoad( m_registerDP );
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( newValue16, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( newValue16, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	PerformStackPointerEmulationFlagForcedConfiguration();
 }
@@ -1365,13 +1381,13 @@ void Recompiler::PerformPullDInstruction()
 void Recompiler::PerformPullBInstruction()
 {
 	auto value = Pull();
-	m_IRBuilder.CreateStore( value, &m_registerDB );
+	m_IRBuilder.CreateStore( value, m_registerDB );
 	
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( value, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( value, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 }
 
 void Recompiler::PerformPullPInstruction()
@@ -1417,7 +1433,7 @@ void Recompiler::PerformBlockMoveInstruction( RegisterModeFlag modeFlag, llvm::V
 	auto sourceBank32 = m_IRBuilder.CreateLShr( m_IRBuilder.CreateAnd( operand32, 0xff00 ), 8 );
 	auto destinationBank32 = m_IRBuilder.CreateAnd( operand32, 0xff );	
 
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	auto adjust8 = m_IRBuilder.CreateTrunc( adjust16, llvm::Type::getInt8Ty( m_LLVMContext ) );
@@ -1431,7 +1447,7 @@ void Recompiler::PerformBlockMoveInstruction( RegisterModeFlag modeFlag, llvm::V
 
 void Recompiler::PerformPullInstruction( RegisterModeFlag modeFlag, llvm::Value* register16Ptr )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionPull8( register16Ptr );
@@ -1487,7 +1503,7 @@ llvm::Value* Recompiler::CombineTo32( llvm::Value* low8, llvm::Value* mid8, llvm
 
 void Recompiler::PerformDirectModifyInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionDirectModify8( op8, address32 );
@@ -1502,7 +1518,7 @@ void Recompiler::PerformDirectModifyInstruction( Operation op8, Operation op16, 
 
 void Recompiler::PerformBankModifyInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionBankModify8( op8, address32 );
@@ -1517,7 +1533,7 @@ void Recompiler::PerformBankModifyInstruction( Operation op8, Operation op16, Re
 
 void Recompiler::PerformBankReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionBankRead8( op8, address32 );
@@ -1532,7 +1548,7 @@ void Recompiler::PerformBankReadInstruction( Operation op8, Operation op16, Regi
 
 void Recompiler::PerformBankReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address16, llvm::Value* I )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionBankRead8( op8, address16, I );
@@ -1547,7 +1563,7 @@ void Recompiler::PerformBankReadInstruction( Operation op8, Operation op16, Regi
 
 void Recompiler::PerformLongReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* I )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionLongRead8( op8, address32, I );
@@ -1562,7 +1578,7 @@ void Recompiler::PerformLongReadInstruction( Operation op8, Operation op16, Regi
 
 void Recompiler::PerformDirectReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionDirectRead8( op8, address32 );
@@ -1577,7 +1593,7 @@ void Recompiler::PerformDirectReadInstruction( Operation op8, Operation op16, Re
 
 void Recompiler::PerformDirectReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address16, llvm::Value* I16 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionDirectRead8( op8, address16, I16 );
@@ -1592,7 +1608,7 @@ void Recompiler::PerformDirectReadInstruction( Operation op8, Operation op16, Re
 
 void Recompiler::PerformIndirectReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionIndirectRead8( op8, address32 );
@@ -1607,7 +1623,7 @@ void Recompiler::PerformIndirectReadInstruction( Operation op8, Operation op16, 
 
 void Recompiler::PerformIndexedIndirectReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionIndexedIndirectRead8( op8, address32 );
@@ -1622,7 +1638,7 @@ void Recompiler::PerformIndexedIndirectReadInstruction( Operation op8, Operation
 
 void Recompiler::PerformIndirectIndexedReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionIndirectIndexedRead8( op8, address32 );
@@ -1637,7 +1653,7 @@ void Recompiler::PerformIndirectIndexedReadInstruction( Operation op8, Operation
 
 void Recompiler::PerformIndirectLongReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* I16 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionIndirectLongRead8( op8, address32, I16 );
@@ -1652,7 +1668,7 @@ void Recompiler::PerformIndirectLongReadInstruction( Operation op8, Operation op
 
 void Recompiler::PerformStackReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionStackRead8( op8, address32 );
@@ -1667,7 +1683,7 @@ void Recompiler::PerformStackReadInstruction( Operation op8, Operation op16, Reg
 
 void Recompiler::PerformIndirectStackReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionIndirectStackRead8( op8, address32 );
@@ -1684,7 +1700,7 @@ void Recompiler::PerformBankWriteInstruction( RegisterModeFlag modeFlag, llvm::V
 {
 	auto[ low8, high8 ] = ConvertTo8( value16 );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 	
 	SelectBlock( flagSetBlock );
 	InstructionBankWrite8( address32, low8 );
@@ -1701,7 +1717,7 @@ void Recompiler::PerformBankWriteInstruction( RegisterModeFlag modeFlag, llvm::V
 {
 	auto[ low8, high8 ] = ConvertTo8( value16 );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 	
 	SelectBlock( flagSetBlock );
 	InstructionBankWrite8( address32, I16, low8 );
@@ -1716,10 +1732,10 @@ void Recompiler::PerformBankWriteInstruction( RegisterModeFlag modeFlag, llvm::V
 
 void Recompiler::PerformLongWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* I16 )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto[ low8, high8 ] = ConvertTo8( A );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionLongWrite8( address32, I16, low8 );
@@ -1736,7 +1752,7 @@ void Recompiler::PerformDirectWriteInstruction( RegisterModeFlag modeFlag, llvm:
 {
 	auto[ low8, high8 ] = ConvertTo8( value16 );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionDirectWrite8( address32, low8 );
@@ -1753,7 +1769,7 @@ void Recompiler::PerformDirectWriteInstruction( RegisterModeFlag modeFlag, llvm:
 {
 	auto[ low8, high8 ] = ConvertTo8( value16 );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionDirectWrite8( address32, I16, low8 );
@@ -1768,10 +1784,10 @@ void Recompiler::PerformDirectWriteInstruction( RegisterModeFlag modeFlag, llvm:
 
 void Recompiler::PerformIndirectWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto[ low8, high8 ] = ConvertTo8( A );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionIndirectWrite8( address32, low8 );
@@ -1786,10 +1802,10 @@ void Recompiler::PerformIndirectWriteInstruction( RegisterModeFlag modeFlag, llv
 
 void Recompiler::PerformIndexedIndirectWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto[ low8, high8 ] = ConvertTo8( A );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 	
 	SelectBlock( flagSetBlock );
 	InstructionIndexedIndirectWrite8( address32, low8 );
@@ -1804,10 +1820,10 @@ void Recompiler::PerformIndexedIndirectWriteInstruction( RegisterModeFlag modeFl
 
 void Recompiler::PerformIndirectIndexedWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto[ low8, high8 ] = ConvertTo8( A );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionIndirectIndexedWrite8( address32, low8 );
@@ -1822,10 +1838,10 @@ void Recompiler::PerformIndirectIndexedWriteInstruction( RegisterModeFlag modeFl
 
 void Recompiler::PerformIndirectLongWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32, llvm::Value* I16 )
 {	
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto[ low8, high8 ] = ConvertTo8( A );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionIndirectLongWrite8( address32, I16, low8 );
@@ -1840,10 +1856,10 @@ void Recompiler::PerformIndirectLongWriteInstruction( RegisterModeFlag modeFlag,
 
 void Recompiler::PerformStackWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32 )
 {	
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto[ low8, high8 ] = ConvertTo8( A );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 	
 	SelectBlock( flagSetBlock );
 	InstructionStackWrite8( address32, low8 );
@@ -1860,7 +1876,7 @@ void Recompiler::PerformBitImmediateInstruction( RegisterModeFlag modeFlag, llvm
 {
 	auto[ low8, high8 ] = ConvertTo8( operand16 );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 	
 	SelectBlock( flagSetBlock );
 	InstructionBitImmediate8( low8 );
@@ -1875,10 +1891,10 @@ void Recompiler::PerformBitImmediateInstruction( RegisterModeFlag modeFlag, llvm
 
 void Recompiler::PerformIndirectStackWriteInstruction( RegisterModeFlag modeFlag, llvm::Value* address32 )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto[ low8, high8 ] = ConvertTo8( A );
 	
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 	
 	SelectBlock( flagSetBlock );
 	InstructionIndirectStackWrite8( address32, low8 );
@@ -2030,7 +2046,7 @@ void Recompiler::InstructionIndirectRead16( Operation op, llvm::Value* address32
 
 void Recompiler::InstructionIndexedIndirectRead8( Operation op, llvm::Value* address32 )
 {
-	auto X = m_IRBuilder.CreateLoad( &m_registerX );
+	auto X = m_IRBuilder.CreateLoad( m_registerX );
 	auto X32 = m_IRBuilder.CreateZExt( X, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto readLowDirectAddress = m_IRBuilder.CreateAdd( address32, X32 );
 	auto readDirectLow8 = ReadDirect( readLowDirectAddress );
@@ -2044,7 +2060,7 @@ void Recompiler::InstructionIndexedIndirectRead8( Operation op, llvm::Value* add
 
 void Recompiler::InstructionIndexedIndirectRead16( Operation op, llvm::Value* address32 )
 {
-	auto X = m_IRBuilder.CreateLoad( &m_registerX );
+	auto X = m_IRBuilder.CreateLoad( m_registerX );
 	auto X32 = m_IRBuilder.CreateZExt( X, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto readLowDirectAddress = m_IRBuilder.CreateAdd( address32, X32 );
 	auto readDirectLow8 = ReadDirect( readLowDirectAddress );
@@ -2066,7 +2082,7 @@ void Recompiler::InstructionIndirectIndexedRead8( Operation op, llvm::Value* add
 	auto readDirectHigh8 = ReadDirect( m_IRBuilder.CreateAdd( address32, GetConstant( 1, 32, false ) ) );
 
 	auto bankAddress = m_IRBuilder.CreateZExt( CombineTo16( readDirectLow8, readDirectHigh8 ), llvm::Type::getInt32Ty( m_LLVMContext ) );
-	auto Y = m_IRBuilder.CreateLoad( &m_registerY );
+	auto Y = m_IRBuilder.CreateLoad( m_registerY );
 	auto Y32 = m_IRBuilder.CreateZExt( Y, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto indexedBankAndress = m_IRBuilder.CreateAdd( bankAddress, Y32 );
 	auto read8 = ReadBank( indexedBankAndress );
@@ -2079,7 +2095,7 @@ void Recompiler::InstructionIndirectIndexedRead16( Operation op, llvm::Value* ad
 	auto readDirectHigh8 = ReadDirect( m_IRBuilder.CreateAdd( address32, GetConstant( 1, 32, false ) ) );
 
 	auto bankAddress = m_IRBuilder.CreateZExt( CombineTo16( readDirectLow8, readDirectHigh8 ), llvm::Type::getInt32Ty( m_LLVMContext ) );
-	auto Y = m_IRBuilder.CreateLoad( &m_registerY );
+	auto Y = m_IRBuilder.CreateLoad( m_registerY );
 	auto Y32 = m_IRBuilder.CreateZExt( Y, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto indexedBankAndress = m_IRBuilder.CreateAdd( bankAddress, Y32 );
 
@@ -2146,7 +2162,7 @@ void Recompiler::InstructionIndirectStackRead8( Operation op, llvm::Value* addre
 	auto readStackHigh8 = ReadStack( address32High );
 
 	auto bankAddress = m_IRBuilder.CreateZExt( CombineTo16( readStackLow8, readStackHigh8 ), llvm::Type::getInt32Ty( m_LLVMContext ) );
-	auto Y = m_IRBuilder.CreateLoad( &m_registerY );
+	auto Y = m_IRBuilder.CreateLoad( m_registerY );
 	auto Y32 = m_IRBuilder.CreateZExt( Y, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto indexedBankAndress = m_IRBuilder.CreateAdd( bankAddress, Y32 );
 
@@ -2161,7 +2177,7 @@ void Recompiler::InstructionIndirectStackRead16( Operation op, llvm::Value* addr
 	auto readStackHigh8 = ReadStack( address32High );
 
 	auto bankAddress = m_IRBuilder.CreateZExt( CombineTo16( readStackLow8, readStackHigh8 ), llvm::Type::getInt32Ty( m_LLVMContext ) );
-	auto Y = m_IRBuilder.CreateLoad( &m_registerY );
+	auto Y = m_IRBuilder.CreateLoad( m_registerY );
 	auto Y32 = m_IRBuilder.CreateZExt( Y, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto indexedBankAndress = m_IRBuilder.CreateAdd( bankAddress, Y32 );
 
@@ -2174,7 +2190,7 @@ void Recompiler::InstructionIndirectStackRead16( Operation op, llvm::Value* addr
 
 void Recompiler::InstructionBankIndexedModify8( Operation op, llvm::Value* address16 )
 {
-	auto X = m_IRBuilder.CreateLoad( &m_registerX );
+	auto X = m_IRBuilder.CreateLoad( m_registerX );
 	auto readBankAddress32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAdd( X, address16 ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto read = ReadBank( readBankAddress32 );
 	auto result = ( this->*op )( read );
@@ -2183,7 +2199,7 @@ void Recompiler::InstructionBankIndexedModify8( Operation op, llvm::Value* addre
 
 void Recompiler::InstructionBankIndexedModify16( Operation op, llvm::Value* address16 )
 {
-	auto X = m_IRBuilder.CreateLoad( &m_registerX );
+	auto X = m_IRBuilder.CreateLoad( m_registerX );
 	auto readBankAddressLow32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAdd( X, address16 ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto readBankAddressHigh32 = m_IRBuilder.CreateAdd( readBankAddressLow32, GetConstant( 1, 32, false ) );
 	auto readLow8 = ReadBank( readBankAddressLow32 );
@@ -2285,7 +2301,7 @@ void Recompiler::InstructionIndirectWrite16( llvm::Value* address32, llvm::Value
 
 void Recompiler::InstructionIndexedIndirectWrite8( llvm::Value* address32, llvm::Value* value )
 {
-	auto X16 = m_IRBuilder.CreateLoad( &m_registerX );
+	auto X16 = m_IRBuilder.CreateLoad( m_registerX );
 	auto X32 = m_IRBuilder.CreateZExt( X16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto readDirectAddressLow = m_IRBuilder.CreateAdd( address32, X32 );
 
@@ -2299,7 +2315,7 @@ void Recompiler::InstructionIndexedIndirectWrite8( llvm::Value* address32, llvm:
 
 void Recompiler::InstructionIndexedIndirectWrite16( llvm::Value* address32, llvm::Value* low8, llvm::Value* high8 )
 {
-	auto X16 = m_IRBuilder.CreateLoad( &m_registerX );
+	auto X16 = m_IRBuilder.CreateLoad( m_registerX );
 	auto X32 = m_IRBuilder.CreateZExt( X16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto readDirectAddressLow = m_IRBuilder.CreateAdd( address32, X32 );
 
@@ -2319,7 +2335,7 @@ void Recompiler::InstructionIndirectIndexedWrite8( llvm::Value* address32, llvm:
 
 	auto writeAddress16 = CombineTo16( readDirectLow8, readDirectHigh8 );
 	auto writeAddress32 = m_IRBuilder.CreateZExt( writeAddress16, llvm::Type::getInt32Ty( m_LLVMContext ) );
-	auto Y16 = m_IRBuilder.CreateLoad( &m_registerY );
+	auto Y16 = m_IRBuilder.CreateLoad( m_registerY );
 	auto Y32 = m_IRBuilder.CreateZExt( Y16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto writeAddressIndexed32 = m_IRBuilder.CreateAdd( writeAddress32, Y32 );
 	WriteBank( writeAddressIndexed32, value );
@@ -2332,7 +2348,7 @@ void Recompiler::InstructionIndirectIndexedWrite16( llvm::Value* address32, llvm
 
 	auto writeAddress16 = CombineTo16( readDirectLow8, readDirectHigh8 );
 	auto writeAddress32 = m_IRBuilder.CreateZExt( writeAddress16, llvm::Type::getInt32Ty( m_LLVMContext ) );
-	auto Y16 = m_IRBuilder.CreateLoad( &m_registerY );
+	auto Y16 = m_IRBuilder.CreateLoad( m_registerY );
 	auto Y32 = m_IRBuilder.CreateZExt( Y16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto writeAddressIndexed32 = m_IRBuilder.CreateAdd( writeAddress32, Y32 );
 	WriteBank( writeAddressIndexed32, low8 );
@@ -2384,7 +2400,7 @@ void Recompiler::InstructionIndirectStackWrite8( llvm::Value* address32, llvm::V
 	auto writeAddress16 = CombineTo16( readStackLow8, readStackHigh8 );
 	auto writeAddress32 = m_IRBuilder.CreateZExt( writeAddress16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
-	auto Y16 = m_IRBuilder.CreateLoad( &m_registerY );	
+	auto Y16 = m_IRBuilder.CreateLoad( m_registerY );	
 	auto Y32 = m_IRBuilder.CreateZExt( Y16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
 	WriteBank( m_IRBuilder.CreateAdd( writeAddress32, Y32 ), value );
@@ -2398,7 +2414,7 @@ void Recompiler::InstructionIndirectStackWrite16( llvm::Value* address32, llvm::
 	auto writeAddress16 = CombineTo16( readStackLow8, readStackHigh8 );
 	auto writeAddress32 = m_IRBuilder.CreateZExt( writeAddress16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
-	auto Y16 = m_IRBuilder.CreateLoad( &m_registerY );
+	auto Y16 = m_IRBuilder.CreateLoad( m_registerY );
 	auto Y32 = m_IRBuilder.CreateZExt( Y16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	
 	auto writeAddressIndexed32 = m_IRBuilder.CreateAdd( writeAddress32, Y32 );
@@ -2409,21 +2425,21 @@ void Recompiler::InstructionIndirectStackWrite16( llvm::Value* address32, llvm::
 
 void Recompiler::InstructionBitImmediate8( llvm::Value* operand8 )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto[ ALow8, AHigh8 ] = ConvertTo8( A );
 
 	auto result = m_IRBuilder.CreateAnd( operand8, ALow8 );
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 }
 
 void Recompiler::InstructionBitImmediate16( llvm::Value* operand16 )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 
 	auto result = m_IRBuilder.CreateAnd( operand16, A );
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 }
 
 void Recompiler::InstructionTransfer8( llvm::Value* sourceRegisterPtr, llvm::Value* destinationRegisterPtr )
@@ -2435,10 +2451,10 @@ void Recompiler::InstructionTransfer8( llvm::Value* sourceRegisterPtr, llvm::Val
 	m_IRBuilder.CreateStore( sourceLow8, destinationLow8Ptr );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( sourceLow8, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( sourceLow8, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 }
 
 void Recompiler::InstructionTransfer16( llvm::Value* sourceRegisterPtr, llvm::Value* destinationRegisterPtr )
@@ -2447,37 +2463,37 @@ void Recompiler::InstructionTransfer16( llvm::Value* sourceRegisterPtr, llvm::Va
 	m_IRBuilder.CreateStore( source16Value, destinationRegisterPtr );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( source16Value, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( source16Value, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 }
 
 void Recompiler::InstructionTransferSX8()
 {
-	auto[ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerSP );
-	auto[ xLow8Ptr, xHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerX );
+	auto[ spLow8Ptr, spHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerSP );
+	auto[ xLow8Ptr, xHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerX );
 	
 	auto spLow8Value = m_IRBuilder.CreateLoad( spLow8Ptr );
 	m_IRBuilder.CreateStore( spLow8Value, xLow8Ptr );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( spLow8Value, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( spLow8Value, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 }
 
 void Recompiler::InstructionTransferSX16()
 {
-	auto sp16Value = m_IRBuilder.CreateLoad( &m_registerSP );
-	m_IRBuilder.CreateStore( sp16Value, &m_registerX );
+	auto sp16Value = m_IRBuilder.CreateLoad( m_registerSP );
+	m_IRBuilder.CreateStore( sp16Value, m_registerX );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( sp16Value, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( sp16Value, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 }
 
 void Recompiler::InstructionPush8( llvm::Value* value8 )
@@ -2498,10 +2514,10 @@ void Recompiler::InstructionPull8( llvm::Value* register16Ptr )
 	m_IRBuilder.CreateStore( value, low8Ptr );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( value, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( value, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 }
 
 void Recompiler::InstructionPull16( llvm::Value* register16Ptr )
@@ -2515,21 +2531,21 @@ void Recompiler::InstructionPull16( llvm::Value* register16Ptr )
 
 	auto newValue16 = m_IRBuilder.CreateLoad( register16Ptr );
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( newValue16, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( newValue16, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 }
 
 void Recompiler::InsertBlockMoveInstructionBlock( llvm::Value* sourceBank32, llvm::Value* destinationBank32 )
 {
-	m_IRBuilder.CreateStore( m_IRBuilder.CreateTrunc( destinationBank32, llvm::Type::getInt8Ty( m_LLVMContext ) ), &m_registerDB );
+	m_IRBuilder.CreateStore( m_IRBuilder.CreateTrunc( destinationBank32, llvm::Type::getInt8Ty( m_LLVMContext ) ), m_registerDB );
 
-	auto X16 = m_IRBuilder.CreateLoad( &m_registerX );
+	auto X16 = m_IRBuilder.CreateLoad( m_registerX );
 	auto X32 = m_IRBuilder.CreateZExt( X16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto read8 = Read8( OrAllValues( m_IRBuilder.CreateShl( sourceBank32, 16 ), X32 ) );
 
-	auto Y16 = m_IRBuilder.CreateLoad( &m_registerY );
+	auto Y16 = m_IRBuilder.CreateLoad( m_registerY );
 	auto Y32 = m_IRBuilder.CreateZExt( Y16, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	Write8( OrAllValues( m_IRBuilder.CreateShl( destinationBank32, 16 ), Y32 ), read8 );
 }
@@ -2538,20 +2554,20 @@ void Recompiler::InstructionBlockMove8( llvm::Value* sourceBank32, llvm::Value* 
 {
 	InsertBlockMoveInstructionBlock( sourceBank32, destinationBank32 );
 
-	auto [xLow8Ptr, xHigh8Ptr] = GetLowHighPtrFromPtr16( &m_registerX );
+	auto [xLow8Ptr, xHigh8Ptr] = GetLowHighPtrFromPtr16( m_registerX );
 	auto xLow8Value = m_IRBuilder.CreateLoad( xLow8Ptr );
 	
 	auto newX8 = m_IRBuilder.CreateAdd( xLow8Value, adjust8 );
 	m_IRBuilder.CreateStore( newX8, xLow8Ptr );
 
-	auto[ yLow8Ptr, yHigh8Ptr ] = GetLowHighPtrFromPtr16( &m_registerY );
+	auto[ yLow8Ptr, yHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerY );
 	auto yLow8Value = m_IRBuilder.CreateLoad( yLow8Ptr );
 
 	auto newY8 = m_IRBuilder.CreateAdd( yLow8Value, adjust8 );
 	m_IRBuilder.CreateStore( newY8, yLow8Ptr );
 
-	auto A16 = m_IRBuilder.CreateLoad( &m_registerA );
-	m_IRBuilder.CreateStore( m_IRBuilder.CreateSub( A16, GetConstant( 1, 16, false ) ), &m_registerA );
+	auto A16 = m_IRBuilder.CreateLoad( m_registerA );
+	m_IRBuilder.CreateStore( m_IRBuilder.CreateSub( A16, GetConstant( 1, 16, false ) ), m_registerA );
 	
 	auto cond = m_IRBuilder.CreateICmpNE( A16, GetConstant( 0, 16, false ) );
 	m_IRBuilder.CreateCondBr( cond, blockMove, endBlock );
@@ -2561,14 +2577,14 @@ void Recompiler::InstructionBlockMove16( llvm::Value* sourceBank32, llvm::Value*
 {
 	InsertBlockMoveInstructionBlock( sourceBank32, destinationBank32 );
 
-	auto X16 = m_IRBuilder.CreateLoad( &m_registerX );
-	m_IRBuilder.CreateStore( m_IRBuilder.CreateAdd( X16, adjust16 ), &m_registerX );
+	auto X16 = m_IRBuilder.CreateLoad( m_registerX );
+	m_IRBuilder.CreateStore( m_IRBuilder.CreateAdd( X16, adjust16 ), m_registerX );
 	
-	auto Y16 = m_IRBuilder.CreateLoad( &m_registerY );
-	m_IRBuilder.CreateStore( m_IRBuilder.CreateAdd( Y16, adjust16 ), &m_registerY );
+	auto Y16 = m_IRBuilder.CreateLoad( m_registerY );
+	m_IRBuilder.CreateStore( m_IRBuilder.CreateAdd( Y16, adjust16 ), m_registerY );
 
-	auto A16 = m_IRBuilder.CreateLoad( &m_registerA );
-	m_IRBuilder.CreateStore( m_IRBuilder.CreateSub( A16, GetConstant( 1, 16, false ) ), &m_registerA );
+	auto A16 = m_IRBuilder.CreateLoad( m_registerA );
+	m_IRBuilder.CreateStore( m_IRBuilder.CreateSub( A16, GetConstant( 1, 16, false ) ), m_registerA );
 
 	auto cond = m_IRBuilder.CreateICmpNE( A16, GetConstant( 0, 16, false ) );
 	m_IRBuilder.CreateCondBr( cond, blockMove, endBlock );
@@ -2576,7 +2592,7 @@ void Recompiler::InstructionBlockMove16( llvm::Value* sourceBank32, llvm::Value*
 
 void Recompiler::PerformDirectIndexedModifyInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address16 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionDirectIndexedModify8( op8, address16 );
@@ -2591,7 +2607,7 @@ void Recompiler::PerformDirectIndexedModifyInstruction( Operation op8, Operation
 
 void Recompiler::PerformBankIndexedModifyInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* address16 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionBankIndexedModify8( op8, address16 );
@@ -2629,7 +2645,7 @@ void Recompiler::InstructionDirectModify16( Operation op, llvm::Value* address32
 
 void Recompiler::InstructionDirectIndexedModify8( Operation op, llvm::Value* address16 )
 {
-	auto X = m_IRBuilder.CreateLoad( &m_registerX );
+	auto X = m_IRBuilder.CreateLoad( m_registerX );
 	auto readDirectAddress32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAdd( X, address16 ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto read = ReadDirect( readDirectAddress32 );
 	auto result = ( this->*op )( read );
@@ -2638,7 +2654,7 @@ void Recompiler::InstructionDirectIndexedModify8( Operation op, llvm::Value* add
 
 void Recompiler::InstructionDirectIndexedModify16( Operation op, llvm::Value* address16 )
 {
-	auto X = m_IRBuilder.CreateLoad( &m_registerX );
+	auto X = m_IRBuilder.CreateLoad( m_registerX );
 	auto readDirectAddressLow32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateAdd( X, address16 ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto readDirectAddressHigh32 = m_IRBuilder.CreateAdd( readDirectAddressLow32, GetConstant( 1, 32, false ) );
 	auto readLow8 = ReadDirect( readDirectAddressLow32 );
@@ -2679,35 +2695,35 @@ llvm::Value* Recompiler::TestBits32( llvm::Value* lhs, uint32_t rhs )
 
 llvm::Value* Recompiler::BIT8( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto A8 = m_IRBuilder.CreateTrunc( A, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto tempResult = m_IRBuilder.CreateAnd( value, A8 );
 	
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( tempResult, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto overflowFlagResult = TestBits8( value, 0x40 );
-	m_IRBuilder.CreateStore( overflowFlagResult, &m_OverflowFlag );
+	m_IRBuilder.CreateStore( overflowFlagResult, m_OverflowFlag );
 
 	auto negativeFlagResult = TestBits8( value, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return value;
 }
 
 llvm::Value* Recompiler::BIT16( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto tempResult = m_IRBuilder.CreateAnd( value, A );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( tempResult, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto overflowFlagResult = TestBits16( value, 0x4000 );
-	m_IRBuilder.CreateStore( overflowFlagResult, &m_OverflowFlag );
+	m_IRBuilder.CreateStore( overflowFlagResult, m_OverflowFlag );
 
 	auto negativeFlagResult = TestBits16( value, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 	
 	return value;
 }
@@ -2717,10 +2733,10 @@ llvm::Value* Recompiler::DEC8( llvm::Value* value )
 	auto result = m_IRBuilder.CreateSub( value, GetConstant( 1, 8, false ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
@@ -2730,10 +2746,10 @@ llvm::Value* Recompiler::DEC16( llvm::Value* value )
 	auto result = m_IRBuilder.CreateSub( value, GetConstant( 1, 16, false ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
@@ -2743,10 +2759,10 @@ llvm::Value* Recompiler::INC8( llvm::Value* value )
 	auto result = m_IRBuilder.CreateAdd( value, GetConstant( 1, 8, false ) );
 	
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
@@ -2756,10 +2772,10 @@ llvm::Value* Recompiler::INC16( llvm::Value* value )
 	auto result = m_IRBuilder.CreateAdd( value, GetConstant( 1, 16, false ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
@@ -2767,15 +2783,15 @@ llvm::Value* Recompiler::INC16( llvm::Value* value )
 llvm::Value* Recompiler::LSR8( llvm::Value* value )
 {
 	auto carryFlagResult = TestBits8( value, 0x01 );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateLShr( value, 1 );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
@@ -2783,385 +2799,385 @@ llvm::Value* Recompiler::LSR8( llvm::Value* value )
 llvm::Value* Recompiler::LSR16( llvm::Value* value )
 {
 	auto carryFlagResult = TestBits16( value, 0x01 );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateLShr( value, 1 );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::ROR8( llvm::Value* value )
 {
-	auto carry = m_IRBuilder.CreateLoad( &m_CarryFlag );
+	auto carry = m_IRBuilder.CreateLoad( m_CarryFlag );
 	auto carry8 = m_IRBuilder.CreateZExt( carry, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	
 	auto carryFlagResult = TestBits8( value, 0x01 );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( carry8, 7 ), m_IRBuilder.CreateLShr( value, 1 ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::ROR16( llvm::Value* value )
 {
-	auto carry = m_IRBuilder.CreateLoad( &m_CarryFlag );
+	auto carry = m_IRBuilder.CreateLoad( m_CarryFlag );
 	auto carry16 = m_IRBuilder.CreateZExt( carry, llvm::Type::getInt16Ty( m_LLVMContext ) );
 
 	auto carryFlagResult = TestBits16( value, 0x01 );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( carry16, 15 ), m_IRBuilder.CreateLShr( value, 1 ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::ROL8( llvm::Value* value )
 {
-	auto carry = m_IRBuilder.CreateLoad( &m_CarryFlag );
+	auto carry = m_IRBuilder.CreateLoad( m_CarryFlag );
 	auto carry8 = m_IRBuilder.CreateZExt( carry, llvm::Type::getInt8Ty( m_LLVMContext ) );
 
 	auto carryFlagResult = TestBits8( value, 0x80 );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 	
 	auto result = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( value, 1 ), carry8 );
 	
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 	
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::ROL16( llvm::Value* value )
 {
-	auto carry = m_IRBuilder.CreateLoad( &m_CarryFlag );
+	auto carry = m_IRBuilder.CreateLoad( m_CarryFlag );
 	auto carry16 = m_IRBuilder.CreateZExt( carry, llvm::Type::getInt16Ty( m_LLVMContext ) );
 
 	auto carryFlagResult = TestBits16( value, 0x8000 );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateOr( m_IRBuilder.CreateShl( value, 1 ), carry16 );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::ORA8( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto A8 = m_IRBuilder.CreateTrunc( A, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto result = m_IRBuilder.CreateOr( A8, value );
-	m_IRBuilder.CreateStore( result, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
+	m_IRBuilder.CreateStore( result, m_IRBuilder.CreateBitCast( m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 	
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::ORA16( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto result = m_IRBuilder.CreateOr( A, value );
-	m_IRBuilder.CreateStore( result, &m_registerA );
+	m_IRBuilder.CreateStore( result, m_registerA );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::AND8( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto A8 = m_IRBuilder.CreateTrunc( A, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto result = m_IRBuilder.CreateAnd( A8, value );
-	m_IRBuilder.CreateStore( result, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
+	m_IRBuilder.CreateStore( result, m_IRBuilder.CreateBitCast( m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::AND16( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto result = m_IRBuilder.CreateAnd( A, value );
-	m_IRBuilder.CreateStore( result, &m_registerA );
+	m_IRBuilder.CreateStore( result, m_registerA );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::EOR8( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto A8 = m_IRBuilder.CreateTrunc( A, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto result = m_IRBuilder.CreateXor( A8, value );
-	m_IRBuilder.CreateStore( result, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
+	m_IRBuilder.CreateStore( result, m_IRBuilder.CreateBitCast( m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 	
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::EOR16( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto result = m_IRBuilder.CreateXor( A, value );
-	m_IRBuilder.CreateStore( result, &m_registerA );
+	m_IRBuilder.CreateStore( result, m_registerA );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::LDY8( llvm::Value* value )
 {
-	m_IRBuilder.CreateStore( value, m_IRBuilder.CreateBitCast( &m_registerY, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
+	m_IRBuilder.CreateStore( value, m_IRBuilder.CreateBitCast( m_registerY, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( value, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( value, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return value;
 }
 
 llvm::Value* Recompiler::LDY16( llvm::Value* value )
 {
-	m_IRBuilder.CreateStore( value, &m_registerY );
+	m_IRBuilder.CreateStore( value, m_registerY );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( value, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( value, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return value;
 }
 
 llvm::Value* Recompiler::LDX8( llvm::Value* value )
 {
-	m_IRBuilder.CreateStore( value, m_IRBuilder.CreateBitCast( &m_registerX, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
+	m_IRBuilder.CreateStore( value, m_IRBuilder.CreateBitCast( m_registerX, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( value, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( value, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return value;
 }
 
 llvm::Value* Recompiler::LDX16( llvm::Value* value )
 {
-	m_IRBuilder.CreateStore( value, &m_registerX );
+	m_IRBuilder.CreateStore( value, m_registerX );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( value, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( value, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return value;
 }
 
 llvm::Value* Recompiler::LDA8( llvm::Value* value )
 {
-	m_IRBuilder.CreateStore( value, m_IRBuilder.CreateBitCast( &m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
+	m_IRBuilder.CreateStore( value, m_IRBuilder.CreateBitCast( m_registerA, llvm::Type::getInt8PtrTy( m_LLVMContext ) ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( value, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( value, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return value;
 }
 
 llvm::Value* Recompiler::LDA16( llvm::Value* value )
 {
-	m_IRBuilder.CreateStore( value, &m_registerA );
+	m_IRBuilder.CreateStore( value, m_registerA );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( value, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( value, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return value;
 }
 
 llvm::Value* Recompiler::CPY8( llvm::Value* value )
 {
-	auto Y8 = m_IRBuilder.CreateTrunc( m_IRBuilder.CreateLoad( &m_registerY ), llvm::Type::getInt8Ty( m_LLVMContext ) );
+	auto Y8 = m_IRBuilder.CreateTrunc( m_IRBuilder.CreateLoad( m_registerY ), llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto Y32 = m_IRBuilder.CreateZExt( Y8, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto value32 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
 	auto result32 = m_IRBuilder.CreateSub( Y32, value32 );
 
 	auto carryFlagResult = m_IRBuilder.CreateICmpSGE( result32, GetConstant( 0, 32, false ) );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateTrunc( result32, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::CPY16( llvm::Value* value )
 {
-	auto Y32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerY ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto Y32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( m_registerY ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto value32 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
 	auto result32 = m_IRBuilder.CreateSub( Y32, value32 );
 
 	auto carryFlagResult = m_IRBuilder.CreateICmpSGE( result32, GetConstant( 0, 32, false ) );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateTrunc( result32, llvm::Type::getInt16Ty( m_LLVMContext ) );
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::CPX8( llvm::Value* value )
 {
-	auto X8 = m_IRBuilder.CreateTrunc( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt8Ty( m_LLVMContext ) );
+	auto X8 = m_IRBuilder.CreateTrunc( m_IRBuilder.CreateLoad( m_registerX ), llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto X32 = m_IRBuilder.CreateZExt( X8, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto value32 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
 	auto result32 = m_IRBuilder.CreateSub( X32, value32 );
 
 	auto carryFlagResult = m_IRBuilder.CreateICmpSGE( result32, GetConstant( 0, 32, false ) );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateTrunc( result32, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::CPX16( llvm::Value* value )
 {
-	auto X32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto X32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( m_registerX ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto value32 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
 	auto result32 = m_IRBuilder.CreateSub( X32, value32 );
 
 	auto carryFlagResult = m_IRBuilder.CreateICmpSGE( result32, GetConstant( 0, 32, false ) );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateTrunc( result32, llvm::Type::getInt16Ty( m_LLVMContext ) );
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::CMP8( llvm::Value* value )
 {
-	auto A8 = m_IRBuilder.CreateTrunc( m_IRBuilder.CreateLoad( &m_registerA ), llvm::Type::getInt8Ty( m_LLVMContext ) );
+	auto A8 = m_IRBuilder.CreateTrunc( m_IRBuilder.CreateLoad( m_registerA ), llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto A32 = m_IRBuilder.CreateZExt( A8, llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto value32 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
 	auto result32 = m_IRBuilder.CreateSub( A32, value32 );
 
 	auto carryFlagResult = m_IRBuilder.CreateICmpSGE( result32, GetConstant( 0, 32, false ) );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateTrunc( result32, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
 
 llvm::Value* Recompiler::CMP16( llvm::Value* value )
 {
-	auto A32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( &m_registerA ), llvm::Type::getInt32Ty( m_LLVMContext ) );
+	auto A32 = m_IRBuilder.CreateZExt( m_IRBuilder.CreateLoad( m_registerA ), llvm::Type::getInt32Ty( m_LLVMContext ) );
 	auto value32 = m_IRBuilder.CreateZExt( value, llvm::Type::getInt32Ty( m_LLVMContext ) );
 
 	auto result32 = m_IRBuilder.CreateSub( A32, value32 );
 
 	auto carryFlagResult = m_IRBuilder.CreateICmpSGE( result32, GetConstant( 0, 32, false ) );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateTrunc( result32, llvm::Type::getInt16Ty( m_LLVMContext ) );
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 
 	return result;
 }
@@ -3189,15 +3205,15 @@ llvm::Value* Recompiler::SBC16( llvm::Value* value )
 llvm::Value* Recompiler::ASL8( llvm::Value* value )
 {
 	auto carryFlagResult = TestBits8( value, 0x80 );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 	
 	auto result = m_IRBuilder.CreateShl( value, 1 );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits8( result, 0x80 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 	
 	return result;
 }
@@ -3205,26 +3221,26 @@ llvm::Value* Recompiler::ASL8( llvm::Value* value )
 llvm::Value* Recompiler::ASL16( llvm::Value* value )
 {
 	auto carryFlagResult = TestBits16( value, 0x8000 );
-	m_IRBuilder.CreateStore( carryFlagResult, &m_CarryFlag );
+	m_IRBuilder.CreateStore( carryFlagResult, m_CarryFlag );
 
 	auto result = m_IRBuilder.CreateShl( value, 1 );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( result, GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto negativeFlagResult = TestBits16( result, 0x8000 );
-	m_IRBuilder.CreateStore( negativeFlagResult, &m_NegativeFlag );
+	m_IRBuilder.CreateStore( negativeFlagResult, m_NegativeFlag );
 	
 	return result;
 }
 
 llvm::Value* Recompiler::TRB8( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto A8 = m_IRBuilder.CreateTrunc( A, llvm::Type::getInt8Ty( m_LLVMContext ) );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( m_IRBuilder.CreateAnd( A8, value ), GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto complementA8 = m_IRBuilder.CreateXor( A8, GetConstant( 0xff, 8, false ) );
 	auto result = m_IRBuilder.CreateAnd( value, complementA8 );
@@ -3233,10 +3249,10 @@ llvm::Value* Recompiler::TRB8( llvm::Value* value )
 
 llvm::Value* Recompiler::TRB16( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( m_IRBuilder.CreateAnd( A, value ), GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto complementA = m_IRBuilder.CreateXor( A, GetConstant( 0xffff, 16, false ) );
 	auto result = m_IRBuilder.CreateAnd( value, complementA );
@@ -3245,11 +3261,11 @@ llvm::Value* Recompiler::TRB16( llvm::Value* value )
 
 llvm::Value* Recompiler::TSB8( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 	auto A8 = m_IRBuilder.CreateTrunc( A, llvm::Type::getInt8Ty( m_LLVMContext ) );
 	
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( m_IRBuilder.CreateAnd( A8, value ), GetConstant( 0, 8, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto result = m_IRBuilder.CreateOr( value, A8 );
 	return result;
@@ -3257,10 +3273,10 @@ llvm::Value* Recompiler::TSB8( llvm::Value* value )
 
 llvm::Value* Recompiler::TSB16( llvm::Value* value )
 {
-	auto A = m_IRBuilder.CreateLoad( &m_registerA );
+	auto A = m_IRBuilder.CreateLoad( m_registerA );
 
 	auto zeroFlagResult = m_IRBuilder.CreateICmpEQ( m_IRBuilder.CreateAnd( A, value ), GetConstant( 0, 16, false ) );
-	m_IRBuilder.CreateStore( zeroFlagResult, &m_ZeroFlag );
+	m_IRBuilder.CreateStore( zeroFlagResult, m_ZeroFlag );
 
 	auto result = m_IRBuilder.CreateOr( value, A );
 	return result;
@@ -3268,7 +3284,7 @@ llvm::Value* Recompiler::TSB16( llvm::Value* value )
 
 void Recompiler::PerformImmediateReadInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* operand16 )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	auto operand8 = m_IRBuilder.CreateTrunc( operand16, llvm::Type::getInt8Ty( m_LLVMContext ) );
@@ -3284,7 +3300,7 @@ void Recompiler::PerformImmediateReadInstruction( Operation op8, Operation op16,
 
 void Recompiler::PerformImpliedModifyInstruction( Operation op8, Operation op16, RegisterModeFlag modeFlag, llvm::Value* ptr )
 {
-	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? &m_AccumulatorFlag : &m_IndexRegisterFlag );
+	auto[ flagSetBlock, flagNotSetBlock, endBlock ] = CreateRegisterFlagTestBlock( modeFlag == RegisterModeFlag::REGISTER_MODE_FLAG_M ? m_AccumulatorFlag : m_IndexRegisterFlag );
 
 	SelectBlock( flagSetBlock );
 	InstructionImpliedModify8( op8, ptr );
@@ -3334,7 +3350,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformImmediateReadInstruction( &Recompiler::ORA8, &Recompiler::ORA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x0a:
-			PerformImpliedModifyInstruction( &Recompiler::ASL8, &Recompiler::ASL16, RegisterModeFlag::REGISTER_MODE_FLAG_M, &m_registerA );
+			PerformImpliedModifyInstruction( &Recompiler::ASL8, &Recompiler::ASL16, RegisterModeFlag::REGISTER_MODE_FLAG_M, m_registerA );
 			break;
 		case 0x0b:
 			PerformPushDInstruction();
@@ -3353,7 +3369,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			break;
 		case 0x10:
 			{
-			auto NF = m_IRBuilder.CreateLoad( &m_NegativeFlag );
+			auto NF = m_IRBuilder.CreateLoad( m_NegativeFlag );
 			auto NFCond = m_IRBuilder.CreateICmpEQ( NF, GetConstant( 0, 1, false ) );
 			PerformBranchInstruction( NFCond, instruction.GetJumpLabelName(), functionName );
 			}
@@ -3371,22 +3387,22 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformDirectModifyInstruction( &Recompiler::TRB8, &Recompiler::TRB16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ) );
 			break;
 		case 0x15:
-			PerformDirectReadInstruction( &Recompiler::ORA8, &Recompiler::ORA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformDirectReadInstruction( &Recompiler::ORA8, &Recompiler::ORA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x16:
 			PerformBankIndexedModifyInstruction( &Recompiler::ASL8, &Recompiler::ASL16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x17:
-			PerformIndirectLongReadInstruction( &Recompiler::ORA8, &Recompiler::ORA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformIndirectLongReadInstruction( &Recompiler::ORA8, &Recompiler::ORA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x18:
-			PerformClearFlagInstruction( &m_CarryFlag );
+			PerformClearFlagInstruction( m_CarryFlag );
 			break;
 		case 0x19:
-			PerformBankReadInstruction( &Recompiler::ORA8, &Recompiler::ORA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformBankReadInstruction( &Recompiler::ORA8, &Recompiler::ORA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x1a:
-			PerformImpliedModifyInstruction( &Recompiler::INC8, &Recompiler::INC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, &m_registerA );
+			PerformImpliedModifyInstruction( &Recompiler::INC8, &Recompiler::INC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, m_registerA );
 			break;
 		case 0x1b:
 			PerformTransferCSInstruction();
@@ -3395,13 +3411,13 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformBankModifyInstruction( &Recompiler::TRB8, &Recompiler::TRB16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ) );
 			break;
 		case 0x1d:
-			PerformBankReadInstruction( &Recompiler::ORA8, &Recompiler::ORA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformBankReadInstruction( &Recompiler::ORA8, &Recompiler::ORA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x1e:
 			PerformBankIndexedModifyInstruction( &Recompiler::ASL8, &Recompiler::ASL16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x1f:
-			PerformLongReadInstruction( &Recompiler::ORA8, &Recompiler::ORA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformLongReadInstruction( &Recompiler::ORA8, &Recompiler::ORA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x20:
 			PerformCallShortInstruction( instruction.GetOffset() );
@@ -3434,7 +3450,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformImmediateReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x2a:
-			PerformImpliedModifyInstruction( &Recompiler::ROL8, &Recompiler::ROL16, RegisterModeFlag::REGISTER_MODE_FLAG_M, &m_registerA );
+			PerformImpliedModifyInstruction( &Recompiler::ROL8, &Recompiler::ROL16, RegisterModeFlag::REGISTER_MODE_FLAG_M, m_registerA );
 			break;
 		case 0x2b:
 			PerformPullDInstruction();
@@ -3453,7 +3469,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			break;
 		case 0x30:
 			{
-			auto NF = m_IRBuilder.CreateLoad( &m_NegativeFlag );
+			auto NF = m_IRBuilder.CreateLoad( m_NegativeFlag );
 			auto NFCond = m_IRBuilder.CreateICmpEQ( NF, GetConstant( 1, 1, false ) );
 			PerformBranchInstruction( NFCond, instruction.GetJumpLabelName(), functionName );
 			}
@@ -3468,40 +3484,40 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformIndirectStackReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ) );
 			break;
 		case 0x34:
-			PerformDirectReadInstruction( &Recompiler::BIT8, &Recompiler::BIT16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformDirectReadInstruction( &Recompiler::BIT8, &Recompiler::BIT16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x35:
-			PerformDirectReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformDirectReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x36:
 			PerformBankIndexedModifyInstruction( &Recompiler::ROL8, &Recompiler::ROL16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x37:
-			PerformIndirectLongReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformIndirectLongReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x38:
-			PerformSetFlagInstruction( &m_CarryFlag );
+			PerformSetFlagInstruction( m_CarryFlag );
 			break;
 		case 0x39:
-			PerformBankReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformBankReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x3a:
-			PerformImpliedModifyInstruction( &Recompiler::DEC8, &Recompiler::DEC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, &m_registerA );
+			PerformImpliedModifyInstruction( &Recompiler::DEC8, &Recompiler::DEC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, m_registerA );
 			break;
 		case 0x3b:
-			PerformTransfer16Instruction( &m_registerSP, &m_registerA );
+			PerformTransfer16Instruction( m_registerSP, m_registerA );
 			break;
 		case 0x3c:
-			PerformBankReadInstruction( &Recompiler::BIT8, &Recompiler::BIT16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformBankReadInstruction( &Recompiler::BIT8, &Recompiler::BIT16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x3d:
-			PerformBankReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformBankReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x3e:
 			PerformBankIndexedModifyInstruction( &Recompiler::ROL8, &Recompiler::ROL16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x3f:
-			PerformLongReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformLongReadInstruction( &Recompiler::AND8, &Recompiler::AND16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x40:
 			PerformReturnInterruptInstruction();
@@ -3528,16 +3544,16 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformIndirectLongReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), GetConstant( 0, 16, false ) );
 			break;
 		case 0x48:
-			PerformPushInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, m_IRBuilder.CreateLoad( &m_registerA ) );
+			PerformPushInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, m_IRBuilder.CreateLoad( m_registerA ) );
 			break;
 		case 0x49:
 			PerformImmediateReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x4a:
-			PerformImpliedModifyInstruction( &Recompiler::LSR8, &Recompiler::LSR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, &m_registerA );
+			PerformImpliedModifyInstruction( &Recompiler::LSR8, &Recompiler::LSR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, m_registerA );
 			break;
 		case 0x4b:
-			PerformPush8Instruction( m_IRBuilder.CreateLoad( &m_registerPB ) );
+			PerformPush8Instruction( m_IRBuilder.CreateLoad( m_registerPB ) );
 			break;
 		case 0x4c:
 			PerformJumpInstruction( instruction.GetJumpLabelName(), functionName );
@@ -3553,7 +3569,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			break;
 		case 0x50:
 			{
-			auto VF = m_IRBuilder.CreateLoad( &m_OverflowFlag );
+			auto VF = m_IRBuilder.CreateLoad( m_OverflowFlag );
 			auto VFCond = m_IRBuilder.CreateICmpEQ( VF, GetConstant( 0, 1, false ) );
 			PerformBranchInstruction( VFCond, instruction.GetJumpLabelName(), functionName );
 			}
@@ -3571,37 +3587,37 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformBlockMoveInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), GetConstant( 1, 16, true ) );
 			break;
 		case 0x55:
-			PerformDirectReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformDirectReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x56:
 			PerformBankIndexedModifyInstruction( &Recompiler::LSR8, &Recompiler::LSR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x57:
-			PerformIndirectLongReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformIndirectLongReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x58:
-			PerformClearFlagInstruction( &m_InterruptFlag );
+			PerformClearFlagInstruction( m_InterruptFlag );
 			break;
 		case 0x59:
-			PerformBankReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformBankReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x5a:
-			PerformPushInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformPushInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x5b:
-			PerformTransfer16Instruction( &m_registerA, &m_registerDP );
+			PerformTransfer16Instruction( m_registerA, m_registerDP );
 			break;
 		case 0x5c:
 			PerformJumpInstruction( instruction.GetJumpLabelName(), functionName );
 			break;
 		case 0x5d:
-			PerformBankReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformBankReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x5e:
 			PerformBankIndexedModifyInstruction( &Recompiler::LSR8, &Recompiler::LSR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x5f:
-			PerformLongReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformLongReadInstruction( &Recompiler::EOR8, &Recompiler::EOR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x60:
 			PerformReturnShortInstruction();
@@ -3628,13 +3644,13 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformIndirectLongReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), GetConstant( 0, 16, false ) );
 			break;
 		case 0x68:
-			PerformPullInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, &m_registerA );
+			PerformPullInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, m_registerA );
 			break;
 		case 0x69:
 			PerformImmediateReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x6a:
-			PerformImpliedModifyInstruction( &Recompiler::ROR8, &Recompiler::ROR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, &m_registerA );
+			PerformImpliedModifyInstruction( &Recompiler::ROR8, &Recompiler::ROR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, m_registerA );
 			break;
 		case 0x6b:
 			PerformReturnLongInstruction();
@@ -3653,7 +3669,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			break;
 		case 0x70:
 			{
-			auto VF = m_IRBuilder.CreateLoad( &m_OverflowFlag );
+			auto VF = m_IRBuilder.CreateLoad( m_OverflowFlag );
 			auto VFCond = m_IRBuilder.CreateICmpEQ( VF, GetConstant( 1, 1, false ) );
 			PerformBranchInstruction( VFCond, instruction.GetJumpLabelName(), functionName );
 			}
@@ -3668,40 +3684,40 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformIndirectStackReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ) );
 			break;
 		case 0x74:
-			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ), GetConstant( 0, 16, false ) );
+			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ), GetConstant( 0, 16, false ) );
 			break;
 		case 0x75:
-			PerformDirectReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformDirectReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x76:
 			PerformBankIndexedModifyInstruction( &Recompiler::ROR8, &Recompiler::ROR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x77:
-			PerformIndirectLongReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformIndirectLongReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x78:
-			PerformSetFlagInstruction( &m_InterruptFlag );
+			PerformSetFlagInstruction( m_InterruptFlag );
 			break;
 		case 0x79:
-			PerformBankReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformBankReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x7a:
-			PerformPullInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, &m_registerY );
+			PerformPullInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, m_registerY );
 			break;
 		case 0x7b:
-			PerformTransfer16Instruction( &m_registerDP, &m_registerA );
+			PerformTransfer16Instruction( m_registerDP, m_registerA );
 			break;
 		case 0x7c:
 			PerformJumpIndexedIndirectInstruction( instruction.GetOffset(), GetConstant( instruction.GetOperand(), 16, false ), functionName );
 			break;
 		case 0x7d:
-			PerformBankReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformBankReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x7e:
 			PerformBankIndexedModifyInstruction( &Recompiler::ROR8, &Recompiler::ROR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x7f:
-			PerformLongReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformLongReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x80:
 			PerformBranchInstruction( GetConstant( 1, 1, false ), instruction.GetJumpLabelName(), functionName );
@@ -3716,44 +3732,44 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformStackWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ) );
 			break;
 		case 0x84:
-			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x85:
-			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerA ) );
+			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerA ) );
 			break;
 		case 0x86:
-			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x87:
 			PerformIndirectLongWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), GetConstant( 0, 16, false ) );
 			break;
 		case 0x88:
-			PerformImpliedModifyInstruction( &Recompiler::DEC8, &Recompiler::DEC16, RegisterModeFlag::REGISTER_MODE_FLAG_X, &m_registerY );
+			PerformImpliedModifyInstruction( &Recompiler::DEC8, &Recompiler::DEC16, RegisterModeFlag::REGISTER_MODE_FLAG_X, m_registerY );
 			break;
 		case 0x89:
 			PerformBitImmediateInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0x8a:
-			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, &m_registerX, &m_registerA );
+			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, m_registerX, m_registerA );
 			break;
 		case 0x8b:
-			PerformPush8Instruction( m_IRBuilder.CreateLoad( &m_registerDB ) );
+			PerformPush8Instruction( m_IRBuilder.CreateLoad( m_registerDB ) );
 			break;
 		case 0x8c:
-			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x8d:
-			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerA ) );
+			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerA ) );
 			break;
 		case 0x8e:
-			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x8f:
 			PerformLongWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), GetConstant( 0, 16, false ) );
 			break;
 		case 0x90:
 			{
-			auto CF = m_IRBuilder.CreateLoad( &m_CarryFlag );
+			auto CF = m_IRBuilder.CreateLoad( m_CarryFlag );
 			auto CFCond = m_IRBuilder.CreateICmpEQ( CF, GetConstant( 0, 1, false ) );
 			PerformBranchInstruction( CFCond, instruction.GetJumpLabelName(), functionName );
 			}
@@ -3768,40 +3784,40 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformIndirectStackWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ) );
 			break;
 		case 0x94:
-			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x95:
-			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ), m_IRBuilder.CreateLoad( &m_registerA ) );
+			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ), m_IRBuilder.CreateLoad( m_registerA ) );
 			break;
 		case 0x96:
-			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformDirectWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0x97:
-			PerformIndirectLongWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformIndirectLongWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0x98:
-			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, &m_registerY, &m_registerA );
+			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, m_registerY, m_registerA );
 			break;
 		case 0x99:
-			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ), m_IRBuilder.CreateLoad( &m_registerA ) );
+			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ), m_IRBuilder.CreateLoad( m_registerA ) );
 			break;
 		case 0x9a:
 			PerformTransferXSInstruction();
 			break;
 		case 0x9b:
-			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, &m_registerX, &m_registerY );
+			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, m_registerX, m_registerY );
 			break;
 		case 0x9c:
 			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), GetConstant( 0, 16, false ) );
 			break;
 		case 0x9d:
-			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ), m_IRBuilder.CreateLoad( &m_registerA ) );
+			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ), m_IRBuilder.CreateLoad( m_registerA ) );
 			break;
 		case 0x9e:
-			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ), GetConstant( 0, 16, false ) );
+			PerformBankWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ), GetConstant( 0, 16, false ) );
 			break;
 		case 0x9f:
-			PerformLongWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformLongWriteInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xa0:
 			PerformImmediateReadInstruction( &Recompiler::LDY8, &Recompiler::LDY16, RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 16, false ) );
@@ -3828,13 +3844,13 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformIndirectLongReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), GetConstant( 0, 16, false ) );
 			break;
 		case 0xa8:
-			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, &m_registerA, &m_registerY );
+			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, m_registerA, m_registerY );
 			break;
 		case 0xa9:
 			PerformImmediateReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0xaa:
-			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, &m_registerA, &m_registerX );
+			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, m_registerA, m_registerX );
 			break;
 		case 0xab:
 			PerformPullBInstruction();
@@ -3853,7 +3869,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			break;
 		case 0xb0:
 			{
-			auto CF = m_IRBuilder.CreateLoad( &m_CarryFlag );
+			auto CF = m_IRBuilder.CreateLoad( m_CarryFlag );
 			auto CFCond = m_IRBuilder.CreateICmpEQ( CF, GetConstant( 1, 1, false ) );
 			PerformBranchInstruction( CFCond, instruction.GetJumpLabelName(), functionName );
 			}
@@ -3868,40 +3884,40 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformIndirectStackReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ) );
 			break;
 		case 0xb4:
-			PerformDirectReadInstruction( &Recompiler::LDY8, &Recompiler::LDY16, RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformDirectReadInstruction( &Recompiler::LDY8, &Recompiler::LDY16, RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xb5:
-			PerformDirectReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformDirectReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xb6:
-			PerformDirectReadInstruction( &Recompiler::LDX8, &Recompiler::LDX16, RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformDirectReadInstruction( &Recompiler::LDX8, &Recompiler::LDX16, RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0xb7:
-			PerformIndirectLongReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformIndirectLongReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0xb8:
-			PerformClearFlagInstruction( &m_OverflowFlag );
+			PerformClearFlagInstruction( m_OverflowFlag );
 			break;
 		case 0xb9:
-			PerformBankReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformBankReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0xba:
 			PerformTransferSXInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X );
 			break;
 		case 0xbb:
-			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, &m_registerY, &m_registerX );
+			PerformTransferInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, m_registerY, m_registerX );
 			break;
 		case 0xbc:
-			PerformBankReadInstruction( &Recompiler::LDY8, &Recompiler::LDY16, RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformBankReadInstruction( &Recompiler::LDY8, &Recompiler::LDY16, RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xbd:
-			PerformBankReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformBankReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xbe:
-			PerformBankReadInstruction( &Recompiler::LDX8, &Recompiler::LDX16, RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformBankReadInstruction( &Recompiler::LDX8, &Recompiler::LDX16, RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0xbf:
-			PerformLongReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformLongReadInstruction( &Recompiler::LDA8, &Recompiler::LDA16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xc0:
 			PerformImmediateReadInstruction( &Recompiler::CPY8, &Recompiler::CPY16, RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 16, false ) );
@@ -3928,13 +3944,13 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformIndirectLongReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), GetConstant( 0, 16, false ) );
 			break;
 		case 0xc8:
-			PerformImpliedModifyInstruction( &Recompiler::INC8, &Recompiler::INC16, RegisterModeFlag::REGISTER_MODE_FLAG_X, &m_registerY );
+			PerformImpliedModifyInstruction( &Recompiler::INC8, &Recompiler::INC16, RegisterModeFlag::REGISTER_MODE_FLAG_X, m_registerY );
 			break;
 		case 0xc9:
 			PerformImmediateReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0xca:
-			PerformImpliedModifyInstruction( &Recompiler::DEC8, &Recompiler::DEC16, RegisterModeFlag::REGISTER_MODE_FLAG_X, &m_registerX );
+			PerformImpliedModifyInstruction( &Recompiler::DEC8, &Recompiler::DEC16, RegisterModeFlag::REGISTER_MODE_FLAG_X, m_registerX );
 			break;
 		case 0xcb:
 			// WAI - Nothing to do.
@@ -3953,7 +3969,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			break;
 		case 0xd0:
 			{
-			auto ZF = m_IRBuilder.CreateLoad( &m_ZeroFlag );
+			auto ZF = m_IRBuilder.CreateLoad( m_ZeroFlag );
 			auto ZFCond = m_IRBuilder.CreateICmpEQ( ZF, GetConstant( 0, 1, false ) );
 			PerformBranchInstruction( ZFCond, instruction.GetJumpLabelName(), functionName );
 			}
@@ -3971,22 +3987,22 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformPushEffectiveIndirectAddressInstruction( GetConstant( instruction.GetOperand(), 32, false ) );
 			break;
 		case 0xd5:
-			PerformDirectReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformDirectReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xd6:
 			PerformBankIndexedModifyInstruction( &Recompiler::DEC8, &Recompiler::DEC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0xd7:
-			PerformIndirectLongReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformIndirectLongReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0xd8:
-			PerformClearFlagInstruction( &m_DecimalFlag );
+			PerformClearFlagInstruction( m_DecimalFlag );
 			break;
 		case 0xd9:
-			PerformBankReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformBankReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0xda:
-			PerformPushInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformPushInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xdb:
 			// STP - Nothing to do.
@@ -3995,13 +4011,13 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformJumpIndirectLongInstruction( instruction.GetOffset(), GetConstant( instruction.GetOperand(), 16, false ), functionName );
 			break;
 		case 0xdd:
-			PerformBankReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformBankReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xde:
 			PerformBankIndexedModifyInstruction( &Recompiler::DEC8, &Recompiler::DEC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0xdf:
-			PerformLongReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformLongReadInstruction( &Recompiler::CMP8, &Recompiler::CMP16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xe0:
 			PerformImmediateReadInstruction( &Recompiler::CPX8, &Recompiler::CPX16, RegisterModeFlag::REGISTER_MODE_FLAG_X, GetConstant( instruction.GetOperand(), 16, false ) );
@@ -4028,7 +4044,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformIndirectLongReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), GetConstant( 0, 16, false ) );
 			break;
 		case 0xe8:
-			PerformImpliedModifyInstruction( &Recompiler::INC8, &Recompiler::INC16, RegisterModeFlag::REGISTER_MODE_FLAG_X, &m_registerX );
+			PerformImpliedModifyInstruction( &Recompiler::INC8, &Recompiler::INC16, RegisterModeFlag::REGISTER_MODE_FLAG_X, m_registerX );
 			break;
 		case 0xe9:
 			PerformImmediateReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
@@ -4053,7 +4069,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			break;
 		case 0xf0:
 			{
-			auto ZF = m_IRBuilder.CreateLoad( &m_ZeroFlag );
+			auto ZF = m_IRBuilder.CreateLoad( m_ZeroFlag );
 			auto ZFCond = m_IRBuilder.CreateICmpEQ( ZF, GetConstant( 1, 1, false ) );
 			PerformBranchInstruction( ZFCond, instruction.GetJumpLabelName(), functionName );
 			}
@@ -4071,22 +4087,22 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformPushEffectiveAddressInstruction( GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0xf5:
-			PerformDirectReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformDirectReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xf6:
 			PerformBankIndexedModifyInstruction( &Recompiler::INC8, &Recompiler::INC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0xf7:
-			PerformIndirectLongReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformIndirectLongReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0xf8:
-			PerformSetFlagInstruction( &m_DecimalFlag );
+			PerformSetFlagInstruction( m_DecimalFlag );
 			break;
 		case 0xf9:
-			PerformBankReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerY ) );
+			PerformBankReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerY ) );
 			break;
 		case 0xfa:
-			PerformPullInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, &m_registerX );
+			PerformPullInstruction( RegisterModeFlag::REGISTER_MODE_FLAG_X, m_registerX );
 			break;
 		case 0xfb:
 			PerformExchangeCEInstruction();
@@ -4095,13 +4111,13 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformCallIndexedIndirectInstruction( instruction.GetOffset(), GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0xfd:
-			PerformBankReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformBankReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 		case 0xfe:
 			PerformBankIndexedModifyInstruction( &Recompiler::INC8, &Recompiler::INC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0xff:
-			PerformLongReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( &m_registerX ) );
+			PerformLongReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ), m_IRBuilder.CreateLoad( m_registerX ) );
 			break;
 	}
 }

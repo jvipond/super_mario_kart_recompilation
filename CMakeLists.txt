@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.4.3)
 project(super_mario_kart_recompilation)
 
-find_package(LLVM 8.0 REQUIRED)
+find_package(LLVM 9.0.1 REQUIRED)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -100,7 +100,7 @@ add_custom_command(OUTPUT smk.o
 
 # Find the libraries that correspond to the LLVM components
 # that we wish to use
-llvm_map_components_to_libnames(llvm_libs BitWriter Core Support native)
+llvm_map_components_to_libnames(llvm_libs BitWriter Core Support native passes)
 
 # Link against LLVM libraries
 target_link_libraries(recompiler ${llvm_libs})

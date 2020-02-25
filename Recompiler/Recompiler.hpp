@@ -371,25 +371,25 @@ private:
 
 	llvm::Function* m_StartFunction;
 
-	llvm::GlobalVariable m_registerA;
-	llvm::GlobalVariable m_registerDB;
-	llvm::GlobalVariable m_registerDP;
-	llvm::GlobalVariable m_registerPB;
-	llvm::GlobalVariable m_registerPC;
-	llvm::GlobalVariable m_registerSP;
-	llvm::GlobalVariable m_registerX;
-	llvm::GlobalVariable m_registerY;
-	llvm::GlobalVariable m_registerP;
+	llvm::GlobalVariable* m_registerA;
+	llvm::GlobalVariable* m_registerDB;
+	llvm::GlobalVariable* m_registerDP;
+	llvm::GlobalVariable* m_registerPB;
+	llvm::GlobalVariable* m_registerPC;
+	llvm::GlobalVariable* m_registerSP;
+	llvm::GlobalVariable* m_registerX;
+	llvm::GlobalVariable* m_registerY;
+	llvm::GlobalVariable* m_registerP;
 
-	llvm::GlobalVariable m_CarryFlag;
-	llvm::GlobalVariable m_ZeroFlag;
-	llvm::GlobalVariable m_InterruptFlag;
-	llvm::GlobalVariable m_DecimalFlag;
-	llvm::GlobalVariable m_IndexRegisterFlag;
-	llvm::GlobalVariable m_AccumulatorFlag;
-	llvm::GlobalVariable m_OverflowFlag;
-	llvm::GlobalVariable m_NegativeFlag;
-	llvm::GlobalVariable m_EmulationFlag;
+	llvm::GlobalVariable* m_CarryFlag;
+	llvm::GlobalVariable* m_ZeroFlag;
+	llvm::GlobalVariable* m_InterruptFlag;
+	llvm::GlobalVariable* m_DecimalFlag;
+	llvm::GlobalVariable* m_IndexRegisterFlag;
+	llvm::GlobalVariable* m_AccumulatorFlag;
+	llvm::GlobalVariable* m_OverflowFlag;
+	llvm::GlobalVariable* m_NegativeFlag;
+	llvm::GlobalVariable* m_EmulationFlag;
 
 	llvm::BasicBlock* m_CurrentBasicBlock;
 	llvm::Function* m_CycleFunction;
