@@ -13,6 +13,7 @@
 #include "llvm/IR/CFG.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 
 Recompiler::Recompiler()
 : m_IRBuilder( m_LLVMContext )
@@ -117,6 +118,101 @@ void Recompiler::SetupNmiCall()
 				callPPUFrameFunctionInst->moveBefore( firstInstruction );
 				m_IRBuilder.CreateCall( nmiFunction )->moveAfter( callPPUFrameFunctionInst );
 			}
+		}
+	}
+}
+
+void Recompiler::CreateMainLoopFunction()
+{
+	static const std::string mainLoopContainingFuncName = "FUNC_80FF70";
+	static const std::string mainLoopLabelName = "FUNC_80FF70_CODE_808056";
+	auto findFuncResult = m_Functions.find( mainLoopContainingFuncName );
+	if ( findFuncResult != m_Functions.end() )
+	{
+		// Clone the function that contains the main loop into a new function called mainLoop.
+		// We will then remove the main loop code from the original function and modify the mainLoop function
+		// so that it only contains the main loop code.
+		llvm::ValueToValueMapTy valueToValueMapTy;
+		auto mainLoopFunc = llvm::CloneFunction( findFuncResult->second, valueToValueMapTy );
+		mainLoopFunc->setName( "mainLoop" );
+		
+		// Remove all blocks at the end of the main loop containing function once we hit the point at which we would start the main loop:
+		bool deleteBlocks = false;
+		std::vector<llvm::BasicBlock*> basicBlocksToDelete;
+		llvm::BasicBlock* lastBasicBlock = nullptr;
+		for ( auto& basicBlock : (*findFuncResult->second) )
+		{
+			if ( basicBlock.getName() == mainLoopLabelName )
+			{
+				deleteBlocks = true;
+			}
+
+			if ( deleteBlocks )
+			{
+				basicBlocksToDelete.push_back( &basicBlock );
+			}
+			else
+			{
+				lastBasicBlock = &basicBlock;
+			}
+		}
+
+		for ( auto& basicBlock : basicBlocksToDelete )
+		{
+			basicBlock->eraseFromParent();
+		}
+
+		if ( lastBasicBlock )
+		{
+			auto oldBranchInst = &lastBasicBlock->back();
+			m_IRBuilder.SetInsertPoint( oldBranchInst );
+			m_IRBuilder.CreateRetVoid();
+			oldBranchInst->eraseFromParent();
+		}
+
+		// Then remove all the blocks at the start of the new main loop function so we are left with only the main loop part:
+		deleteBlocks = true;
+		basicBlocksToDelete.clear();
+		llvm::BranchInst* mainLoopBranchInst = nullptr;
+		llvm::BasicBlock* mainLoopBranchBlock = nullptr;
+		for ( auto& basicBlock : *mainLoopFunc )
+		{
+			if ( mainLoopBranchBlock != nullptr )
+			{
+				for ( auto& instruction : basicBlock )
+				{
+					if ( llvm::BranchInst* branchInst = llvm::dyn_cast<llvm::BranchInst>( &instruction ) )
+					{
+						if ( branchInst->getSuccessor( 0 ) == mainLoopBranchBlock )
+						{
+							mainLoopBranchInst = branchInst;
+						}
+					}
+				}
+			}
+			
+			if ( basicBlock.getName() == mainLoopLabelName )
+			{
+				deleteBlocks = false;
+				mainLoopBranchBlock = &basicBlock;
+			}
+
+			if ( deleteBlocks )
+			{
+				basicBlocksToDelete.push_back( &basicBlock );
+			}
+		}
+
+		for ( auto& basicBlock : basicBlocksToDelete )
+		{
+			basicBlock->eraseFromParent();
+		}
+
+		if ( mainLoopBranchInst )
+		{
+			m_IRBuilder.SetInsertPoint( mainLoopBranchInst );
+			m_IRBuilder.CreateRetVoid();
+			mainLoopBranchInst->eraseFromParent();
 		}
 	}
 }
@@ -455,6 +551,7 @@ void Recompiler::Recompile()
 	SetupNmiCall();
 	SetupIrqFunction();
 	FixReturnAddressManipulationFunctions();
+	CreateMainLoopFunction();
 
 	SelectBlock( entry );
 	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, m_RomResetAddr, true ) ), m_registerPC );

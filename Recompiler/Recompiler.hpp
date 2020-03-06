@@ -26,6 +26,7 @@ public:
 	void SetupNmiCall();
 	void SetupIrqFunction();
 	void FixReturnAddressManipulationFunctions();
+	void CreateMainLoopFunction();
 	void AddOffsetToInstructionString( const uint32_t offset, const std::string& stringGlobalVariable );
 	void AddInstructionStringGlobalVariables();
 	void SelectBlock( llvm::BasicBlock* basicBlock );

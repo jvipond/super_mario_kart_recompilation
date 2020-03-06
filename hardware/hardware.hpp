@@ -21,6 +21,7 @@ extern "C"
 	uint8_t SBC8( uint8_t data );
 	uint16_t SBC16( uint16_t data );
 	void start( void );
+	void mainLoop( void );
 	void panic( void );
 
 	uint8_t read8( const uint32_t address );
@@ -45,12 +46,15 @@ struct InternalRegisterState
 	uint16_t controllerData[ 4 ] = { 0 };
 };
 
+void mainLoopFunc( void );
+
 class Hardware
 {
 	public:
 		static Hardware& GetInstance();
 		void PowerOn();
 		void quit();
+		void mainLoopFunc();
 
 	struct AluMulDivState
 	{

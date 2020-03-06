@@ -1864,12 +1864,6 @@ void PPU::doFrame( DmaController& dmaController, const InternalRegisterState& re
 	{
 		refresh( window );
 	}
-
-#ifdef __EMSCRIPTEN__
-	emscripten_sleep(1);
-#endif // __EMSCRIPTEN__
-
-	std::cout << "PPU::doFrame" << std::endl;
 }
 
 auto PPU::scanline() -> void {
@@ -1885,10 +1879,10 @@ auto PPU::scanline() -> void {
   }
 
   ///*if(vcounter() > 0 && vcounter() < vdisp())*/ {
-  //  latch.hires |= io.pseudoHires || io.bgMode == 5 || io.bgMode == 6;
-  //  //supersampling and EXTBG mode are not compatible, so disable supersampling in EXTBG mode
-  //  latch.hd |= io.bgMode == 7 && hdScale() > 1 && (hdSupersample() == 0 || io.extbg == 1);
-  //  latch.ss |= io.bgMode == 7 && hdScale() > 1 && (hdSupersample() == 1 && io.extbg == 0);
+    latch.hires |= io.pseudoHires || io.bgMode == 5 || io.bgMode == 6;
+    //supersampling and EXTBG mode are not compatible, so disable supersampling in EXTBG mode
+    latch.hd |= io.bgMode == 7 && hdScale() > 1 && (hdSupersample() == 0 || io.extbg == 1);
+    latch.ss |= io.bgMode == 7 && hdScale() > 1 && (hdSupersample() == 1 && io.extbg == 0);
   //}
 
   /*if(vcounter() == vdisp())*/ {
@@ -2229,11 +2223,11 @@ auto PPU::refresh( SDL_Window* window ) -> void {
 		glBindTexture( GL_TEXTURE_2D, texture );
 		//glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, width, height, getFormat(), getType(), buffer );
 
-		const uint32_t sourceWidth = 1600;
+		const uint32_t sourceWidth = 1024;
 		const uint32_t sourceHeight = 960;
 		const uint32_t outputX = 0;
 		const uint32_t outputY = 0;
-		const uint32_t outputWidth = 1600;
+		const uint32_t outputWidth = 1024;
 		const uint32_t outputHeight = 960;
 		
 

@@ -2,6 +2,7 @@
 #include <iostream>
 #include "ppu/ppu.hpp"
 #ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
 #include <GLES3/gl32.h>
 #else
 #include "GL/gl3w.h"
@@ -281,6 +282,14 @@ void Hardware::PowerOn()
 
 	std::cout << "Reached Start!" << std::endl;
 	start();
+#ifdef __EMSCRIPTEN__
+	emscripten_set_main_loop( mainLoopFunc, 60, 1 );
+#else
+	while ( 1 )
+	{
+		mainLoopFunc();
+	}
+#endif // __EMSCRIPTEN__
 
 	quit();
 }
@@ -332,7 +341,7 @@ void Hardware::initialiseSDL()
 	SDL_GL_SetAttribute( SDL_GL_STENCIL_SIZE, 8 );
 	SDL_WindowFlags window_flags = (SDL_WindowFlags)( SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI );
 
-	m_Window = SDL_CreateWindow( "SMK", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1600, 960, window_flags );
+	m_Window = SDL_CreateWindow( "SMK", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1024, 960, window_flags );
 	m_GLContext = SDL_GL_CreateContext( m_Window );
 	SDL_GL_SetSwapInterval( 1 ); // Enable vsync
 
@@ -656,34 +665,45 @@ void Hardware::Panic( void )
 	std::exit( EXIT_FAILURE );
 }
 
-void Hardware::RomCycle( const int32_t cycles, const uint32_t implemented )
+void mainLoopFunc()
 {
-	if ( m_RenderSnesOutputToScreen )
-	{
-		incrementCycleCount();
-		SDL_Event event;
-		while ( SDL_PollEvent( &event ) )
-		{
-			ImGui_ImplSDL2_ProcessEvent( &event );
-			if ( event.type == SDL_QUIT )
-				quit();
-			if ( event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE && event.window.windowID == SDL_GetWindowID( m_Window ) )
-				quit();
-		}
+	Hardware::GetInstance().mainLoopFunc();
+}
 
-		for ( auto& controller : m_SnesControllers )
+void Hardware::mainLoopFunc( void )
+{
+	SDL_Event event;
+	while ( SDL_PollEvent( &event ) )
+	{
+		ImGui_ImplSDL2_ProcessEvent( &event );
+		if ( event.type == SDL_QUIT )
 		{
-			controller.UpdateKeyboardState();
+			quit();
+		}
+		if ( event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE && event.window.windowID == SDL_GetWindowID( m_Window ) )
+		{
+			quit();
 		}
 	}
-	else
+
+	for ( auto& controller : m_SnesControllers )
+	{
+		controller.UpdateKeyboardState();
+	}
+
+	mainLoop();
+}
+
+void Hardware::RomCycle( const int32_t cycles, const uint32_t implemented )
+{
+	incrementCycleCount();
+	if ( !m_RenderSnesOutputToScreen )
 	{
 		if ( !implemented )
 		{
 			m_AutoStep = false;
 			m_DoRender = true;
 		}
-		incrementCycleCount();
 		std::get<3>( m_InstructionTrace.back() ) = implemented;
 		ImGuiIO& io = ImGui::GetIO();
 
@@ -837,6 +857,10 @@ bool Hardware::SnesController::IsCurrentPort( const uint32_t address )
 
 void Hardware::SnesController::RefreshStateBuffer()
 {
+	if ( !m_KeyboardState )
+	{
+		return;
+	}
 	if ( m_Port == 0 )
 	{
 		m_StateBuffer = 0;
