@@ -15,8 +15,8 @@ public:
 	Recompiler();
 	~Recompiler();
 
-	void LoadAST( const char* filename );
-	void Recompile();
+	void LoadAST( const std::string& filename );
+	void Recompile( const std::string& targetType );
 
 	void AddLabelNameToBasicBlock( const std::string& labelName, llvm::BasicBlock* basicBlock );
 	void CreateFunctions();

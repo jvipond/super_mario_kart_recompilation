@@ -87,7 +87,7 @@ source_group("hardware"       FILES ${SRC_HARDWARE})
 add_executable(recompiler ${recompiler_SOURCES})
 									
 add_custom_command(OUTPUT smk.ll
-									COMMAND recompiler
+									COMMAND recompiler super_mario_kart_ast.json native
 									DEPENDS ${recompiler_SOURCES} ${GENERATED_JSON}
 									WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 									COMMENT "run generated recompiler in ${CMAKE_CURRENT_BINARY_DIR}")		

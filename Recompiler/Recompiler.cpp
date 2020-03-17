@@ -490,14 +490,20 @@ void Recompiler::GenerateCode()
 	}
 }
 
-void Recompiler::Recompile()
+void Recompiler::Recompile( const std::string& targetType )
 {
 	llvm::InitializeNativeTarget();
 	
-#ifdef __EMSCRIPTEN__
-	m_RecompilationModule.setDataLayout( "e-m:e-p:32:32-i64:64-n32:64-S128" );
-	m_RecompilationModule.setTargetTriple( "wasm32" );
-#endif // __EMSCRIPTEN__
+	if ( targetType == "native" )
+	{
+		std::cout << "Building native IR file" << std::endl;
+	}
+	if ( targetType == "wasm" )
+	{
+		std::cout << "Building wasm IR file" << std::endl;
+		m_RecompilationModule.setDataLayout( "e-m:e-p:32:32-i64:64-n32:64-S128" );
+		m_RecompilationModule.setTargetTriple( "wasm32" );
+	}
 
 	m_registerA = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "A" );
 	m_registerDB = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "DB" );
@@ -576,15 +582,9 @@ void Recompiler::Recompile()
 	llvm::ModulePassManager modulePassManager = passBuilder.buildModuleOptimizationPipeline( llvm::PassBuilder::OptimizationLevel::O3 );
 	modulePassManager.run( m_RecompilationModule, moduleAnalysisManager );
 
-#ifdef __EMSCRIPTEN__
-	llvm::raw_fd_ostream binaryOutput( "smk.bc", EC );
-	llvm::WriteBitcodeToFile( m_RecompilationModule, binaryOutput );
-	binaryOutput.flush();
-#else
 	std::error_code EC;
 	llvm::raw_fd_ostream outputHumanReadable( "smk.ll", EC );
 	m_RecompilationModule.print( outputHumanReadable, nullptr );
-#endif // __EMSCRIPTEN__
 }
 
 void Recompiler::AddLabelNameToBasicBlock( const std::string& labelName, llvm::BasicBlock* basicBlock )
@@ -4219,7 +4219,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 	}
 }
 
-void Recompiler::LoadAST( const char* filename )
+void Recompiler::LoadAST( const std::string& filename )
 {
 	std::ifstream ifs( filename );
 	if ( ifs.is_open() )
