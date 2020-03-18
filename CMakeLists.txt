@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.4.3)
 project(super_mario_kart_recompilation)
 
-find_package(LLVM 9.0.1 REQUIRED)
+find_package(LLVM 9.0.0 REQUIRED)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")

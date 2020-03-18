@@ -973,7 +973,7 @@ auto Recompiler::AddAllValues( llvm::Value* s, T... ts )
 
 llvm::Value* Recompiler::GetProcessorStatusRegisterValueFromFlags()
 {
-	auto c8 = m_IRBuilder.CreateShl( LoadFlag8( m_CarryFlag ), 0ull );
+	auto c8 = m_IRBuilder.CreateShl( LoadFlag8( m_CarryFlag ), (uint64_t)0ull );
 	auto z8 = m_IRBuilder.CreateShl( LoadFlag8( m_ZeroFlag ), 1ull );
 	auto i8 = m_IRBuilder.CreateShl( LoadFlag8( m_InterruptFlag ), 2ull );
 	auto d8 = m_IRBuilder.CreateShl( LoadFlag8( m_DecimalFlag ), 3ull );

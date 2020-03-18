@@ -42,8 +42,8 @@ public:
 private:
 	llvm::Value* CombineTo16( llvm::Value* low8, llvm::Value* high8 );
 	llvm::Value* CombineTo32( llvm::Value* low8, llvm::Value* mid8, llvm::Value* high8 );
-	auto Recompiler::ConvertTo8( llvm::Value* value16 );
-	auto Recompiler::GetLowHighPtrFromPtr16( llvm::Value* ptr16 );
+	auto ConvertTo8( llvm::Value* value16 );
+	auto GetLowHighPtrFromPtr16( llvm::Value* ptr16 );
 
 	llvm::Value* ReadDirect( llvm::Value* address );
 	llvm::Value* ReadDirectNative( llvm::Value* address );
@@ -397,7 +397,7 @@ private:
 	llvm::Function* m_PanicFunction;
 	llvm::Function* m_UpdateInstructionOutput;
 
-	static const uint32_t WAIT_FOR_VBLANK_LOOP_LABEL_OFFSET = 0x805C;
+	static inline const uint32_t WAIT_FOR_VBLANK_LOOP_LABEL_OFFSET = 0x805C;
 	static inline const std::string WAIT_FOR_VBLANK_LABEL_NAME = "CODE_80805C";
 
 	llvm::Function* m_Load8Function;
