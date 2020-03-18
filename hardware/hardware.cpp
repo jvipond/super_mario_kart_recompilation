@@ -283,7 +283,7 @@ void Hardware::PowerOn()
 	std::cout << "Reached Start!" << std::endl;
 	start();
 #ifdef __EMSCRIPTEN__
-	emscripten_set_main_loop( mainLoopFunc, 60, 1 );
+	emscripten_set_main_loop( ::mainLoopFunc, 60, 1 );
 #else
 	while ( 1 )
 	{
