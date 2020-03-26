@@ -36,7 +36,7 @@ public:
 
 	void SetInsertPoint( llvm::BasicBlock* basicBlock );
 	
-	void PerformRomCycle( llvm::Value* value );
+	void PerformRomCycle( void );
 	void PerformUpdateInstructionOutput( const uint32_t offset, const uint32_t pc, const std::string& instructionString );
 
 private:
@@ -200,7 +200,7 @@ private:
 	void PerformPullPInstruction();
 	void PerformPushEffectiveAddressInstruction( llvm::Value* operand16 );
 	void PerformPushEffectiveIndirectAddressInstruction( llvm::Value* address32 );
-	void PerformPushEffectiveRelativeAddressInstruction( llvm::Value* operand16 );
+	void PerformPushEffectiveRelativeAddressInstruction( llvm::Value* operand16, const uint32_t instructionPC );
 	void PerformBlockMoveInstruction( RegisterModeFlag modeFlag, llvm::Value* operand32, llvm::Value* adjust16 );
 	
 	void PerformProcessorStatusRegisterForcedConfiguration();
@@ -209,20 +209,18 @@ private:
 	void PerformBranchInstruction( llvm::Value* cond, const std::string& labelName, const std::string& functionName );
 	void PerformJumpInstruction( const std::string& labelName, const std::string& functionName );
 	void InsertJumpTable( llvm::Value* switchValue, const uint32_t instructionOffset, const std::string& functionName );
-	void PerformJumpIndirectInstruction( const uint32_t instructionOffset, llvm::Value* operand16, const std::string& functionName );
-	void PerformJumpIndexedIndirectInstruction( const uint32_t instructionOffset, llvm::Value* operand16, const std::string& functionName );
+	void PerformJumpIndirectInstruction( const uint32_t instructionOffset, const uint32_t instructionPC, llvm::Value* operand16, const std::string& functionName );
+	void PerformJumpIndexedIndirectInstruction( const uint32_t instructionOffset, const uint32_t instructionPC, llvm::Value* operand16, const std::string& functionName );
 	void PerformJumpIndirectLongInstruction( const uint32_t instructionOffset, llvm::Value* operand16, const std::string& functionName );
 
 	void InsertFunctionCall( const uint32_t instructionOffset );
 	void PerformCallShortInstruction( const uint32_t instructionOffset );
 	void PerformCallLongInstruction( const uint32_t instructionOffset );
-	void PerformCallIndexedIndirectInstruction( const uint32_t instructionOffset, llvm::Value* operand16 );
+	void PerformCallIndexedIndirectInstruction( const uint32_t instructionOffset, const uint32_t instructionPC, llvm::Value* operand16 );
 
 	void PerformReturnInterruptInstruction();
 	void PerformReturnShortInstruction();
 	void PerformReturnLongInstruction();
-
-	llvm::Value* GetPBPC32();
 
 	llvm::Value* GetConstant( uint32_t value, uint32_t bitWidth, bool isSigned );
 	llvm::Value* TestBits8( llvm::Value* lhs, uint8_t rhs );
@@ -357,26 +355,24 @@ private:
 	uint32_t m_RomResetAddr;
 	std::string m_RomNmiFuncName;
 	std::string m_RomIrqFuncName;
-	std::set<std::string> m_FunctionNames;
+	std::set< std::string > m_FunctionNames;
 	std::unordered_map< uint32_t, std::unordered_map< std::string, bool > > m_LabelsToFunctions;
 	std::unordered_map< uint32_t, std::string > m_OffsetToFunctionName;
 	std::unordered_map< uint32_t, std::unordered_map< uint32_t, std::string > > m_JumpTables;
 	std::vector< std::variant<Label, Instruction> > m_Program;
-	std::unordered_map<std::string, llvm::Function*> m_Functions;
+	std::unordered_map< std::string, llvm::Function* > m_Functions;
 	std::unordered_map< std::string, uint32_t > m_LabelNamesToOffsets;
 	std::unordered_map< uint32_t, std::string > m_OffsetsToLabelNames;
 	std::unordered_map< std::string, llvm::BasicBlock* > m_LabelNamesToBasicBlocks;
 	std::unordered_map< uint32_t, llvm::GlobalVariable* > m_OffsetsToInstructionStringGlobalVariable;
 	std::unordered_map< std::string, uint32_t > m_returnAddressManipulationFunctions;
-	std::unordered_map< std::string, llvm::BasicBlock* > m_returnAddressManipulationFunctionsBlocks;
+	std::unordered_map< std::string, llvm::BasicBlock* > m_returnAddressManipulationFunctionBlocks;
 
 	llvm::Function* m_StartFunction;
 
 	llvm::GlobalVariable* m_registerA;
 	llvm::GlobalVariable* m_registerDB;
 	llvm::GlobalVariable* m_registerDP;
-	llvm::GlobalVariable* m_registerPB;
-	llvm::GlobalVariable* m_registerPC;
 	llvm::GlobalVariable* m_registerSP;
 	llvm::GlobalVariable* m_registerX;
 	llvm::GlobalVariable* m_registerY;

@@ -28,7 +28,7 @@ extern "C"
 	void write8( const uint32_t address, const uint8_t value );
 	void doPPUFrame( void );
 	void updateInstructionOutput( const uint32_t pc, const char* instructionString );
-	void romCycle( const int32_t cycles, const uint32_t implemented );
+	void romCycle( void );
 }
 
 struct InternalRegisterState
@@ -99,7 +99,7 @@ class Hardware
 	void DoPPUFrame();
 	void UpdateInstructionOutput( const uint32_t pc, const char* instructionString );
 	void Panic();
-	void RomCycle( const int32_t cycles, const uint32_t implemented );
+	void RomCycle( void );
 
 private:
 	Hardware() {};
@@ -133,8 +133,8 @@ private:
 	uint32_t m_wRamPosition = 0;
 	DmaController m_dmaController;
 
-	bool m_AutoStep = true;
-	bool m_DoRender = false;
+	bool m_AutoStepDebug = false;
+	bool m_DoDebugRender = false;
 	bool m_RenderSnesOutputToScreen = true;
 
 	struct RegisterState
@@ -142,8 +142,6 @@ private:
 		uint16_t A = 0;
 		uint8_t DB = 0;
 		uint16_t DP = 0;
-		uint8_t PB = 0;
-		uint16_t PC = 0;
 		uint16_t SP = 0;
 		uint16_t X = 0;
 		uint16_t Y = 0;
@@ -159,7 +157,7 @@ private:
 		bool EF = true;
 	};
 
-	std::deque<std::tuple<uint32_t, const char*, RegisterState, uint32_t>> m_InstructionTrace;
+	std::deque<std::tuple<uint32_t, const char*, RegisterState>> m_InstructionTrace;
 
 	MemoryEditor m_MemoryEditor;
 };

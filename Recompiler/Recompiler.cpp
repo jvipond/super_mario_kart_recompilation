@@ -23,8 +23,6 @@ Recompiler::Recompiler()
 , m_registerA( nullptr )
 , m_registerDB( nullptr )
 , m_registerDP( nullptr )
-, m_registerPB( nullptr )
-, m_registerPC( nullptr )
 , m_registerSP( nullptr )
 , m_registerX( nullptr )
 , m_registerY( nullptr )
@@ -72,8 +70,8 @@ void Recompiler::SetupIrqFunction()
 	newEntryBlock->moveBefore( oldEntryBlock );
 	SelectBlock( newEntryBlock );
 
-	Push( m_IRBuilder.CreateLoad( m_registerPB ) );
-	auto pc16 = m_IRBuilder.CreateLoad( m_registerPC );
+	Push( GetConstant( 0, 8, false ) );
+	auto pc16 = GetConstant( 0, 16, false );
 	auto[ pclow8, pcHigh8 ] = ConvertTo8( pc16 );
 	Push( pcHigh8 );
 	Push( pclow8 );
@@ -92,8 +90,8 @@ void Recompiler::SetupNmiCall()
 	newEntryBlock->moveBefore( &oldEntryBlock );
 	SelectBlock( newEntryBlock );
 
-	Push( m_IRBuilder.CreateLoad( m_registerPB ) );
-	auto pc16 = m_IRBuilder.CreateLoad( m_registerPC );
+	Push( GetConstant( 0, 8, false ) );
+	auto pc16 = GetConstant( 0, 16, false );
 	auto [pclow8, pcHigh8] = ConvertTo8( pc16 );
 	Push( pcHigh8 );
 	Push( pclow8 );
@@ -279,8 +277,8 @@ void Recompiler::FixReturnAddressManipulationFunctions()
 						oldReturnInstruction->eraseFromParent();
 					}
 
-					auto findBasicBlock = m_returnAddressManipulationFunctionsBlocks.find( functionName );
-					if ( findBasicBlock != m_returnAddressManipulationFunctionsBlocks.end() )
+					auto findBasicBlock = m_returnAddressManipulationFunctionBlocks.find( functionName );
+					if ( findBasicBlock != m_returnAddressManipulationFunctionBlocks.end() )
 					{
 						auto basicBlock = findBasicBlock->second;
 						if ( basicBlock )
@@ -452,7 +450,7 @@ void Recompiler::GenerateCode()
 
 						if ( functionSearch != m_returnAddressManipulationFunctions.end() && instruction.GetPC() == functionSearch->second )
 						{
-							m_returnAddressManipulationFunctionsBlocks.emplace( functionSearch->first, basicBlock );
+							m_returnAddressManipulationFunctionBlocks.emplace( functionSearch->first, basicBlock );
 						}
 						GenerateCodeForInstruction( instruction, functionEntry.first );
 						
@@ -508,8 +506,6 @@ void Recompiler::Recompile( const std::string& targetType )
 	m_registerA = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "A" );
 	m_registerDB = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "DB" );
 	m_registerDP = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "DP" );
-	m_registerPB = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt8Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "PB" );
-	m_registerPC = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "PC" );
 	m_registerSP = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "SP" );
 	m_registerX = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "X" );
 	m_registerY = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt16Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "Y" );
@@ -525,7 +521,7 @@ void Recompiler::Recompile( const std::string& targetType )
 	m_EmulationFlag = new llvm::GlobalVariable( m_RecompilationModule, llvm::Type::getInt1Ty( m_LLVMContext ), false, llvm::GlobalValue::ExternalLinkage, nullptr, "EF" );
 
 	// Add cycle function that will called every time an instruction is executed:
-	m_CycleFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt32Ty( m_LLVMContext )}, false ), llvm::Function::ExternalLinkage, "romCycle", m_RecompilationModule );
+	m_CycleFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), false ), llvm::Function::ExternalLinkage, "romCycle", m_RecompilationModule );
 	m_UpdateInstructionOutput = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), { llvm::Type::getInt32Ty( m_LLVMContext ), llvm::Type::getInt8PtrTy( m_LLVMContext ) }, false ), llvm::Function::ExternalLinkage, "updateInstructionOutput", m_RecompilationModule );
 	m_PanicFunction = llvm::Function::Create( llvm::FunctionType::get( llvm::Type::getVoidTy( m_LLVMContext ), false ), llvm::Function::ExternalLinkage, "panic", m_RecompilationModule );
 
@@ -560,7 +556,6 @@ void Recompiler::Recompile( const std::string& targetType )
 	CreateMainLoopFunction();
 
 	SelectBlock( entry );
-	m_IRBuilder.CreateStore( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 16, m_RomResetAddr, true ) ), m_registerPC );
 	
 	auto resetFunction = m_Functions[ m_RomResetFuncName ];
 	m_IRBuilder.CreateCall( resetFunction );
@@ -609,22 +604,13 @@ void Recompiler::SetInsertPoint( llvm::BasicBlock* basicBlock )
 	m_IRBuilder.SetInsertPoint( basicBlock );
 }
 
-void Recompiler::PerformRomCycle( llvm::Value* value )
+void Recompiler::PerformRomCycle( void )
 {
-	std::vector<llvm::Value*> params = { value, llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, 1, false ) ) };
-	m_IRBuilder.CreateCall( m_CycleFunction, params );
+	m_IRBuilder.CreateCall( m_CycleFunction );
 }
 
 void Recompiler::PerformUpdateInstructionOutput( const uint32_t offset, const uint32_t pc, const std::string& instructionString )
 {
-	auto pb32 = GetConstant( (pc & 0xff0000) >> 16, 32, false );
-	auto pb8 = m_IRBuilder.CreateTrunc( pb32, llvm::Type::getInt8Ty( m_LLVMContext ) );
-	m_IRBuilder.CreateStore( pb8, m_registerPB );
-
-	auto pc32 = GetConstant( pc & 0xffff, 32, false );
-	auto pc16 = m_IRBuilder.CreateTrunc( pc32, llvm::Type::getInt16Ty( m_LLVMContext ) );
-	m_IRBuilder.CreateStore( pc16, m_registerPC );
-
 	auto s = m_OffsetsToInstructionStringGlobalVariable[ offset ];
 	std::vector<llvm::Value*> params = { GetConstant( pc, 32, false ), m_IRBuilder.CreateConstGEP2_32( s->getValueType(), s, 0, 0, "" ) };
 	m_IRBuilder.CreateCall( m_UpdateInstructionOutput, params, "" ); 
@@ -1222,19 +1208,6 @@ void Recompiler::PerformJumpInstruction( const std::string& labelName, const std
 	m_CurrentBasicBlock = nullptr;
 }
 
-llvm::Value* Recompiler::GetPBPC32()
-{
-	auto pc16 = m_IRBuilder.CreateLoad( m_registerPC );
-	auto pc32 = m_IRBuilder.CreateZExt( pc16, llvm::Type::getInt32Ty( m_LLVMContext ) );
-	
-	auto pb8 = m_IRBuilder.CreateLoad( m_registerPB );
-	auto pb32 = m_IRBuilder.CreateZExt( pb8, llvm::Type::getInt32Ty( m_LLVMContext ) );
-
-	auto shiftedPB32 = m_IRBuilder.CreateShl( pb32, 16 );
-	
-	return m_IRBuilder.CreateOr( shiftedPB32, pc32 );
-}
-
 void Recompiler::InsertJumpTable( llvm::Value* switchValue, const uint32_t instructionOffset, const std::string& functionName )
 {
 	auto findJumpTableEntries = m_JumpTables.find( instructionOffset );
@@ -1271,24 +1244,18 @@ void Recompiler::InsertJumpTable( llvm::Value* switchValue, const uint32_t instr
 	SelectBlock( endBlock );
 }
 
-void Recompiler::PerformJumpIndirectInstruction( const uint32_t instructionOffset, llvm::Value* operand16, const std::string& functionName )
+void Recompiler::PerformJumpIndirectInstruction( const uint32_t instructionOffset, const uint32_t instructionPC, llvm::Value* operand16, const std::string& functionName )
 {
 	auto low8PC = Read8( m_IRBuilder.CreateZExt( operand16, llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 	auto high8PC = Read8( m_IRBuilder.CreateZExt( m_IRBuilder.CreateAdd( operand16, GetConstant( 1, 16, false ) ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 
-	auto [pclow8Ptr, pcHigh8Ptr] = GetLowHighPtrFromPtr16( m_registerPC );
-	m_IRBuilder.CreateStore( low8PC, pclow8Ptr );
-	m_IRBuilder.CreateStore( high8PC, pcHigh8Ptr );
-
-	auto jumpAddress = GetPBPC32();
+	auto jumpAddress = OrAllValues( GetConstant( 0xff0000 & instructionPC, 32, false ), m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( high8PC, llvm::Type::getInt32Ty( m_LLVMContext ) ), 8 ), m_IRBuilder.CreateZExt( low8PC, llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 	InsertJumpTable( jumpAddress, instructionOffset, functionName );
 }
 
-void Recompiler::PerformJumpIndexedIndirectInstruction( const uint32_t instructionOffset, llvm::Value* operand16, const std::string& functionName )
+void Recompiler::PerformJumpIndexedIndirectInstruction( const uint32_t instructionOffset, const uint32_t instructionPC,  llvm::Value* operand16, const std::string& functionName )
 {
-	auto PB8 = m_IRBuilder.CreateLoad( m_registerPB );
-	auto PB32 = m_IRBuilder.CreateZExt( PB8, llvm::Type::getInt32Ty( m_LLVMContext ) );
-	auto shiftedPB32 = m_IRBuilder.CreateShl( PB32, 16 );
+	auto shiftedPB32 = GetConstant( instructionPC & 0x00ff0000, 32, false );
 
 	auto X16 = m_IRBuilder.CreateLoad( m_registerX );
 	auto readAddressLow8 = OrAllValues( shiftedPB32, m_IRBuilder.CreateZExt( AddAllValues( operand16, X16 ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
@@ -1297,12 +1264,7 @@ void Recompiler::PerformJumpIndexedIndirectInstruction( const uint32_t instructi
 	auto low8PC = Read8( readAddressLow8 );
 	auto high8PC = Read8( readAddressHigh8 );
 
-	auto[ pclow8Ptr, pcHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerPC );
-
-	m_IRBuilder.CreateStore( low8PC, pclow8Ptr );
-	m_IRBuilder.CreateStore( high8PC, pcHigh8Ptr );
-
-	auto jumpAddress = GetPBPC32();
+	auto jumpAddress = OrAllValues( GetConstant( 0xff0000 & instructionPC, 32, false ), m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( high8PC, llvm::Type::getInt32Ty( m_LLVMContext ) ), 8 ), m_IRBuilder.CreateZExt( low8PC, llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 	InsertJumpTable( jumpAddress, instructionOffset, functionName );
 }
 
@@ -1330,7 +1292,7 @@ void Recompiler::InsertFunctionCall( const uint32_t instructionOffset )
 
 void Recompiler::PerformCallShortInstruction( const uint32_t instructionOffset )
 {
-	auto pcPlus2 = AddAllValues( m_IRBuilder.CreateLoad( m_registerPC ), GetConstant( 2, 16, false ) );
+	auto pcPlus2 = AddAllValues( GetConstant( 0, 16, false ), GetConstant( 2, 16, false ) );
 	auto [pcLow8, pcHigh8] = ConvertTo8( pcPlus2 );
 	Push( pcHigh8 );
 	Push( pcLow8 );
@@ -1340,10 +1302,10 @@ void Recompiler::PerformCallShortInstruction( const uint32_t instructionOffset )
 
 void Recompiler::PerformCallLongInstruction( const uint32_t instructionOffset )
 {
-	auto pb8 = m_IRBuilder.CreateLoad( m_registerPB );
+	auto pb8 = GetConstant( 0, 8, false );
 	Push( pb8 );
 	
-	auto pcPlus3 = AddAllValues( m_IRBuilder.CreateLoad( m_registerPC ), GetConstant( 3, 16, false ) );
+	auto pcPlus3 = AddAllValues( GetConstant( 0, 16, false ), GetConstant( 3, 16, false ) );
 	auto[ pcLow8, pcHigh8 ] = ConvertTo8( pcPlus3 );
 	Push( pcHigh8 );
 	Push( pcLow8 );
@@ -1353,16 +1315,14 @@ void Recompiler::PerformCallLongInstruction( const uint32_t instructionOffset )
 	InsertFunctionCall( instructionOffset );
 }
 
-void Recompiler::PerformCallIndexedIndirectInstruction( const uint32_t instructionOffset, llvm::Value* operand16 )
+void Recompiler::PerformCallIndexedIndirectInstruction( const uint32_t instructionOffset, const uint32_t instructionPC, llvm::Value* operand16 )
 {
-	auto pcPlus2 = AddAllValues( m_IRBuilder.CreateLoad( m_registerPC ), GetConstant( 2, 16, false ) );
+	auto pcPlus2 = AddAllValues( GetConstant( 0, 16, false ), GetConstant( 2, 16, false ) );
 	auto[ pcLow8, pcHigh8 ] = ConvertTo8( pcPlus2 );
 	PushNative( pcHigh8 );
 	PushNative( pcLow8 );
 
-	auto PB8 = m_IRBuilder.CreateLoad( m_registerPB );
-	auto PB32 = m_IRBuilder.CreateZExt( PB8, llvm::Type::getInt32Ty( m_LLVMContext ) );
-	auto shiftedPB32 = m_IRBuilder.CreateShl( PB32, 16 );
+	auto shiftedPB32 = GetConstant( instructionPC & 0x00ff0000, 32, false );
 
 	auto X16 = m_IRBuilder.CreateLoad( m_registerX );
 	auto readAddressLow8 = OrAllValues( shiftedPB32, m_IRBuilder.CreateZExt( AddAllValues( operand16, X16 ), llvm::Type::getInt32Ty( m_LLVMContext ) ) );
@@ -1371,12 +1331,7 @@ void Recompiler::PerformCallIndexedIndirectInstruction( const uint32_t instructi
 	auto low8PC = Read8( readAddressLow8 );
 	auto high8PC = Read8( readAddressHigh8 );
 
-	auto[ pclow8Ptr, pcHigh8Ptr ] = GetLowHighPtrFromPtr16( m_registerPC );
-
-	m_IRBuilder.CreateStore( low8PC, pclow8Ptr );
-	m_IRBuilder.CreateStore( high8PC, pcHigh8Ptr );
-
-	auto jumpAddress = GetPBPC32();
+	auto jumpAddress = OrAllValues( GetConstant( 0xff0000 & instructionPC, 32, false ), m_IRBuilder.CreateShl( m_IRBuilder.CreateZExt( high8PC, llvm::Type::getInt32Ty( m_LLVMContext ) ), 8 ), m_IRBuilder.CreateZExt( low8PC, llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 		
 	PerformStackPointerEmulationFlagForcedConfiguration();
 
@@ -1512,9 +1467,10 @@ void Recompiler::PerformPushEffectiveIndirectAddressInstruction( llvm::Value* ad
 	PerformStackPointerEmulationFlagForcedConfiguration();
 }
 
-void Recompiler::PerformPushEffectiveRelativeAddressInstruction( llvm::Value* operand16 )
+void Recompiler::PerformPushEffectiveRelativeAddressInstruction( llvm::Value* operand16, const uint32_t instructionPC )
 {
-	auto pbpc = GetPBPC32();
+	//auto pbpc = GetPBPC32();
+	auto pbpc = GetConstant( instructionPC & 0xffffff, 32, false );
 
 	auto result32 = m_IRBuilder.CreateAdd( pbpc, m_IRBuilder.CreateZExt( operand16, llvm::Type::getInt32Ty( m_LLVMContext ) ) );
 	auto result16 = m_IRBuilder.CreateTrunc( result32, llvm::Type::getInt16Ty( m_LLVMContext ) );
@@ -3413,7 +3369,7 @@ void Recompiler::PerformImpliedModifyInstruction( Operation op8, Operation op16,
 void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, const std::string& functionName )
 {
 	PerformUpdateInstructionOutput( instruction.GetOffset(), instruction.GetPC(), instruction.GetInstructionString() );
-	PerformRomCycle( llvm::ConstantInt::get( m_LLVMContext, llvm::APInt( 32, static_cast<uint64_t>( 0 ), false ) ) );
+	PerformRomCycle();
 	switch ( instruction.GetOpcode() )
 	{
 		case 0x00:
@@ -3650,7 +3606,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformImpliedModifyInstruction( &Recompiler::LSR8, &Recompiler::LSR16, RegisterModeFlag::REGISTER_MODE_FLAG_M, m_registerA );
 			break;
 		case 0x4b:
-			PerformPush8Instruction( m_IRBuilder.CreateLoad( m_registerPB ) );
+			PerformPush8Instruction( GetConstant( ( instruction.GetPC() & 0xff0000) >> 16, 8, false ) );
 			break;
 		case 0x4c:
 			PerformJumpInstruction( instruction.GetJumpLabelName(), functionName );
@@ -3723,7 +3679,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformIndexedIndirectReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ) );
 			break;
 		case 0x62:
-			PerformPushEffectiveRelativeAddressInstruction( GetConstant( instruction.GetOperand(), 16, true ) );
+			PerformPushEffectiveRelativeAddressInstruction( GetConstant( instruction.GetOperand(), 16, true ), instruction.GetPC() );
 			break;
 		case 0x63:
 			PerformStackReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ) );
@@ -3753,7 +3709,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformReturnLongInstruction();
 			break;
 		case 0x6c:
-			PerformJumpIndirectInstruction( instruction.GetOffset(), GetConstant( instruction.GetOperand(), 16, false ), functionName );
+			PerformJumpIndirectInstruction( instruction.GetOffset(), instruction.GetPC(), GetConstant( instruction.GetOperand(), 16, false ), functionName );
 			break;
 		case 0x6d:
 			PerformBankReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 32, false ) );
@@ -3805,7 +3761,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformTransfer16Instruction( m_registerDP, m_registerA );
 			break;
 		case 0x7c:
-			PerformJumpIndexedIndirectInstruction( instruction.GetOffset(), GetConstant( instruction.GetOperand(), 16, false ), functionName );
+			PerformJumpIndexedIndirectInstruction( instruction.GetOffset(), instruction.GetPC(), GetConstant( instruction.GetOperand(), 16, false ), functionName );
 			break;
 		case 0x7d:
 			PerformBankReadInstruction( &Recompiler::ADC8, &Recompiler::ADC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );
@@ -4205,7 +4161,7 @@ void Recompiler::GenerateCodeForInstruction( const Instruction& instruction, con
 			PerformExchangeCEInstruction();
 			break;
 		case 0xfc:
-			PerformCallIndexedIndirectInstruction( instruction.GetOffset(), GetConstant( instruction.GetOperand(), 16, false ) );
+			PerformCallIndexedIndirectInstruction( instruction.GetOffset(), instruction.GetPC(), GetConstant( instruction.GetOperand(), 16, false ) );
 			break;
 		case 0xfd:
 			PerformBankReadInstruction( &Recompiler::SBC8, &Recompiler::SBC16, RegisterModeFlag::REGISTER_MODE_FLAG_M, GetConstant( instruction.GetOperand(), 16, false ), m_IRBuilder.CreateLoad( m_registerX ) );

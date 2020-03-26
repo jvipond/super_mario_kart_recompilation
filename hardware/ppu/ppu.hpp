@@ -10,18 +10,18 @@
 //* vertical mosaic coordinates are not exact
 //* (hardware-mod) 128KB VRAM mode not supported
 
-#define   int8   int8_t
-#define  int16  int16_t
-#define  int32  int32_t
-#define  int64  int64_t
-#define  uint8  uint8_t
-#define uint16 uint16_t
-#define uint32 uint32_t
-#define uint64 uint64_t
-#define uint uint32_t
-#define uint10 uint16_t
-#define uint15 uint16_t
-#define int13 int16_t
+using int8 = int8_t;
+using int16 = int16_t;
+using int32 = int32_t;
+using int64 = int64_t;
+using uint8 = uint8_t;
+using uint16 = uint16_t;
+using uint32 = uint32_t;
+using uint64 = uint64_t;
+using uint = uint32_t;
+using uint10 = uint16_t;
+using uint15 = uint16_t;
+using int13 = int16_t;
 
 #define PPU PPUfast
 

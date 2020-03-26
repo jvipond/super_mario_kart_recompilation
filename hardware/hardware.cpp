@@ -30,8 +30,6 @@ extern "C"
 	} A;
 	uint8_t DB = 0;
 	uint16_t DP = 0;
-	uint8_t PB = 0;
-	uint16_t PC = 0;
 	uint16_t SP = 0x01ff;
 	uint16_t X = 0;
 	uint16_t Y = 0;
@@ -187,9 +185,9 @@ extern "C"
 		Hardware::GetInstance().UpdateInstructionOutput( pc, instructionString );
 	}
 
-	void romCycle( const int32_t cycles, const uint32_t implemented )
+	void romCycle( void )
 	{
-		Hardware::GetInstance().RomCycle( cycles, implemented );
+		Hardware::GetInstance().RomCycle();
 	}
 }
 
@@ -646,21 +644,21 @@ void Hardware::DoPPUFrame()
 
 void Hardware::UpdateInstructionOutput( const uint32_t pc, const char* instructionString )
 {
-	RegisterState rs = { A.w, DB, DP, PB, PC, SP, X, Y, CF, ZF, IF, DF, XF, MF, VF, NF, EF };
+	RegisterState rs = { A.w, DB, DP, SP, X, Y, CF, ZF, IF, DF, XF, MF, VF, NF, EF };
 
 	if ( m_InstructionTrace.size() >= 128 )
 	{
 		m_InstructionTrace.pop_front();
 	}
-	m_InstructionTrace.push_back( { pc, instructionString, rs, 1 } );
+	m_InstructionTrace.push_back( { pc, instructionString, rs } );
 }
 
 void Hardware::Panic( void )
 {
-	m_AutoStep = false;
-	m_DoRender = true;
+	m_AutoStepDebug = false;
+	m_DoDebugRender = true;
 	m_RenderSnesOutputToScreen = false;
-	romCycle( 0, false );
+	romCycle();
 	std::cout << "Exited with error" << std::endl;
 	std::exit( EXIT_FAILURE );
 }
@@ -694,24 +692,18 @@ void Hardware::mainLoopFunc( void )
 	mainLoop();
 }
 
-void Hardware::RomCycle( const int32_t cycles, const uint32_t implemented )
+void Hardware::RomCycle()
 {
 	incrementCycleCount();
 	if ( !m_RenderSnesOutputToScreen )
 	{
-		if ( !implemented )
-		{
-			m_AutoStep = false;
-			m_DoRender = true;
-		}
-		std::get<3>( m_InstructionTrace.back() ) = implemented;
 		ImGuiIO& io = ImGui::GetIO();
 
 		ImVec4 clear_color = ImVec4( 0.45f, 0.55f, 0.60f, 1.00f );
 
 		bool scrollToBottom = true;
 		bool done = false;
-		while ( m_DoRender && !done )
+		while ( m_DoDebugRender && !done )
 		{
 			SDL_Event event;
 			while ( SDL_PollEvent( &event ) )
@@ -734,15 +726,13 @@ void Hardware::RomCycle( const int32_t cycles, const uint32_t implemented )
 				ImGui::Text( "Y = 0x%04hX", Y );
 				ImGui::Text( "DB = 0x%02hhX", DB );
 				ImGui::Text( "DP = 0x%04hX", DP );
-				ImGui::Text( "PB = 0x%02hhX", PB );
-				ImGui::Text( "PC = 0x%04hX", PC );
 				ImGui::Text( "SP = 0x%04hX", SP );
 
 				ImGui::Text( "P = %c%c%c%c%c%c%c%c", NF ? 'N' : 'n', VF ? 'V' : 'v', MF ? 'M' : 'm',
 					XF ? 'X' : 'x', DF ? 'D' : 'd', IF ? 'I' : 'i',
 					ZF ? 'Z' : 'z', CF ? 'C' : 'c' );
 
-				done = m_AutoStep;
+				done = m_AutoStepDebug;
 				if ( ImGui::Button( "Single Step" ) )
 				{
 					done = true;
@@ -750,15 +740,15 @@ void Hardware::RomCycle( const int32_t cycles, const uint32_t implemented )
 
 				if ( ImGui::Button( "Auto Step" ) )
 				{
-					m_AutoStep = !m_AutoStep;
-					done = m_AutoStep;
+					m_AutoStepDebug = !m_AutoStepDebug;
+					done = m_AutoStepDebug;
 				}
 
 				if ( ImGui::Button( "Continue" ) )
 				{
-					m_AutoStep = true;
+					m_AutoStepDebug = true;
 					done = true;
-					m_DoRender = false;
+					m_DoDebugRender = false;
 					m_RenderSnesOutputToScreen = true;
 				}
 
@@ -804,21 +794,19 @@ void Hardware::RomCycle( const int32_t cycles, const uint32_t implemented )
 				ImGui::SetColumnWidth( -1, 150.0f );
 				ImGui::Text( "Implemented" ); ImGui::NextColumn();
 				ImGui::Separator();
-				for ( auto&[ pc, instructionString, rs, hasBeenImplemented ] : m_InstructionTrace )
+				for ( auto&[ pc, instructionString, rs ] : m_InstructionTrace )
 				{
 					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%04hX", rs.A ); ImGui::NextColumn();
 					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%04hX", rs.X ); ImGui::NextColumn();
 					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%04hX", rs.Y ); ImGui::NextColumn();
 					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%02hhX", rs.DB ); ImGui::NextColumn();
 					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%04hX", rs.DP ); ImGui::NextColumn();
-					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%02hhX", rs.PB ); ImGui::NextColumn();
 					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "0x%04hX", rs.SP ); ImGui::NextColumn();
 					ImGui::TextColored( ImVec4( 0.8f, 0.8f, 0.8f, 1.0f ), "%c%c%c%c%c%c%c%c", rs.NF ? 'N' : 'n', rs.VF ? 'V' : 'v', rs.MF ? 'M' : 'm',
 						rs.XF ? 'X' : 'x', rs.DF ? 'D' : 'd', rs.IF ? 'I' : 'i',
 						rs.ZF ? 'Z' : 'z', rs.CF ? 'C' : 'c' ); ImGui::NextColumn();
 					ImGui::TextColored( ImVec4( 1.0f, 1.0f, 0.0f, 1.0f ), "$%06X", pc ); ImGui::NextColumn();
 					ImGui::TextColored( ImVec4( 1.0f, 1.0f, 0.0f, 1.0f ), "%s", instructionString ); ImGui::NextColumn();
-					ImGui::TextColored( ImVec4( 1.0f, 0.0f, 1.0f, 1.0f ), "%s", hasBeenImplemented == 0 ? "[NOT IMPLEMENTED]" : "" ); ImGui::NextColumn();
 					ImGui::Separator();
 				}
 				ImGui::Columns( 1 );
